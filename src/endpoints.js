@@ -1,8 +1,9 @@
-// Named endpoint presets. Loads .shmakk/endpoints.json from the workspace
-// root (or the nearest ancestor) and applies the selected preset by setting
-// process.env.SHMAKK_* variables before any other module reads them.
+// Named endpoint presets. Loads ~/.config/shmakk/endpoints.js (or
+// ~/.config/shmakk/endpoints.json for backwards compat) and applies the
+// selected preset by setting process.env.SHMAKK_* variables before any
+// other module reads them.
 //
-// Format (.shmakk/endpoints.json):
+// Format (~/.config/shmakk/endpoints.js):
 // {
 //   "makkorch": {
 //     "base_url": "https://api.example.com/v1",
@@ -14,17 +15,31 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 function configPath(cwd) {
-  // Look in the workspace root (usually cwd). The endpoint config is
-  // a user-local file and doesn't need ancestor traversal like state.
-  return path.join(cwd, '.shmakk', 'endpoints.json');
+  const configDir = path.join(os.homedir(), '.config', 'shmakk');
+  const jsPath = path.join(configDir, 'endpoints.js');
+  const jsonPath = path.join(configDir, 'endpoints.json');
+
+  // Try .js first, fall back to .json for backwards compatibility
+  if (fs.existsSync(jsPath)) return jsPath;
+  if (fs.existsSync(jsonPath)) return jsonPath;
+  return jsPath; // Default to .js even if neither exists
 }
 
 function loadEndpoints(cwd) {
+  const cfgPath = configPath(cwd || process.cwd());
   try {
-    const raw = fs.readFileSync(configPath(cwd || process.cwd()), 'utf8');
-    return JSON.parse(raw);
+    if (cfgPath.endsWith('.js')) {
+      // Clear require cache to get fresh data on each load
+      if (require.cache[cfgPath]) delete require.cache[cfgPath];
+      return require(cfgPath);
+    } else {
+      // JSON format
+      const raw = fs.readFileSync(cfgPath, 'utf8');
+      return JSON.parse(raw);
+    }
   } catch {
     return null;
   }

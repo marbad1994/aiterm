@@ -5,15 +5,39 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
+// Detect git repository root. Returns null if not in a git repo.
+function findGitRoot(cwd = process.cwd()) {
+  try {
+    const { execSync } = require('child_process');
+    const root = execSync('git rev-parse --show-toplevel', {
+      cwd,
+      stdio: ['pipe', 'pipe', 'ignore'],
+      encoding: 'utf8',
+    }).trim();
+    return fs.existsSync(root) ? root : null;
+  } catch {
+    return null;
+  }
+}
+
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
 
-  // Apply named endpoint preset from .shmakk/endpoints.json before
+  // Auto-detect git repo root as workspace if not explicitly set.
+  // This keeps .shmakk state centralized at repo root instead of scattered.
+  if (!opts.workspace) {
+    const gitRoot = findGitRoot(process.cwd());
+    if (gitRoot) {
+      opts.workspace = gitRoot;
+    }
+  }
+
+  // Apply named endpoint preset from ~/.config/shmakk/endpoints.js before
   // any other module reads SHMAKK_* environment variables.
   if (opts.endpoint) {
-    const cwd = opts.workspace || process.cwd();
-    if (!applyEndpoint(opts.endpoint, cwd)) {
-      process.stderr.write(`[shmakk] endpoint "${opts.endpoint}" not found in ${path.join(cwd, '.shmakk', 'endpoints.json')}\n`);
+    const configDir = path.join(require('os').homedir(), '.config', 'shmakk', 'endpoints.js');
+    if (!applyEndpoint(opts.endpoint, opts.workspace || process.cwd())) {
+      process.stderr.write(`[shmakk] endpoint "${opts.endpoint}" not found in ${configDir}\n`);
     }
   }
 
@@ -91,17 +115,18 @@ async function main() {
     process.exit(0);
   }
 
-  if (opts.status || opts.stats || opts.compact || opts.loadSkill || opts.installSkill || opts.listSkills || opts.skillStatus || opts.unloadSkill || opts.resumeStatus || opts.exitNow || opts.restart || opts.reset || opts.profileSet) {
+  if (opts.status || opts.stats || opts.compact || opts.loadSkill || opts.installSkill || opts.listSkills || opts.skillStatus || opts.unloadSkill || opts.resumeStatus || opts.showPlan || opts.exitNow || opts.restart || opts.reset || opts.profileSet) {
     const ctl = require('./control');
     if (opts.status) process.exit(ctl.status());
     if (opts.stats) process.exit(ctl.stats());
     if (opts.compact) process.exit(ctl.compactContext());
-    if (opts.loadSkill) process.exit(ctl.loadSkill(opts.loadSkill));
-    if (opts.installSkill) process.exit(await ctl.installSkill(opts.installSkill));
+    if (opts.loadSkill) process.exit(ctl.loadSkill(opts.loadSkill, opts.globalSkills));
+    if (opts.installSkill) process.exit(await ctl.installSkill(opts.installSkill, opts.globalSkills));
     if (opts.listSkills) process.exit(ctl.listSkills());
     if (opts.skillStatus) process.exit(ctl.skillStatus());
     if (opts.unloadSkill) process.exit(ctl.unloadSkill(opts.unloadSkill));
     if (opts.resumeStatus) process.exit(ctl.resumeStatus());
+    if (opts.showPlan) process.exit(ctl.showPlan());
     if (opts.exitNow) process.exit(ctl.exitParent());
     if (opts.restart) process.exit(ctl.restartParent());
     if (opts.reset) process.exit(ctl.resetConversation());

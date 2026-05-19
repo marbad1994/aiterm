@@ -18,7 +18,9 @@ function parseArgs(argv) {
     skillStatus: false,
     unloadSkill: null,
     installSkill: null,
+    globalSkills: false,
     resumeStatus: false,
+    showPlan: false,
     exitNow: false,
     restart: false,
     profile: null,
@@ -56,12 +58,15 @@ function parseArgs(argv) {
       case '--status': opts.status = true; break;
       case '--stats': opts.stats = true; break;
       case '--compact': opts.compact = true; break;
+      case '-G':
+      case '--global': opts.globalSkills = true; break;
       case '--load-skill': opts.loadSkill = argv[++i] || null; break;
       case '--list-skills': opts.listSkills = true; break;
       case '--skill-status': opts.skillStatus = true; break;
       case '--unload-skill': opts.unloadSkill = argv[++i] || null; break;
       case '--install-skill': opts.installSkill = argv[++i] || null; break;
       case '--resume-status': opts.resumeStatus = true; break;
+      case '--show-plan': opts.showPlan = true; break;
       case '--exit': opts.exitNow = true; break;
       case '--restart': opts.restart = true; break;
       case '--reset': opts.reset = true; break;
@@ -115,10 +120,12 @@ Control (run from inside an shmakk session):
   shmakk --stats                  Show session/task stats (journal, audit, active skill)
   shmakk --compact                Compact context by clearing conversation + task journal
   shmakk --load-skill <name>      Load a Claude/Codex-style skill into shmakk workspace state
-  shmakk --list-skills            List registered local skills
-  shmakk --skill-status           Show active skill and registry status
-  shmakk --unload-skill <name>    Remove skill from registry/local cache
   shmakk --install-skill <url>    Download skill markdown from URL, validate, and load
+  shmakk -G, --global             With --load-skill or --install-skill, use global (~/.config/shmakk) instead of workspace
+  shmakk --list-skills            List all registered skills (workspace + global)
+  shmakk --skill-status           Show active skill and registry status (workspace + global)
+  shmakk --unload-skill <name>    Remove skill from whichever registry has it
+  shmakk --show-plan              Show current plan status (tasks and progress)
   shmakk --resume-status          Show task journal summary for resume continuity
   shmakk --exit                   Cleanly exit the parent shmakk
   shmakk --restart                Restart the inner shell (preserves window)
@@ -132,7 +139,7 @@ Optional:
   --yes-files                     Auto-accept write_file, edit_file, and make_dir in auto mode
   --workspace <path>              Override workspace root
   --profile <name>                Startup profile: tiny|balanced|deep|builder|large-app
-  --endpoint <name>               Use endpoint preset from .shmakk/endpoints.json
+  --endpoint <name>               Use endpoint preset from ~/.config/shmakk/endpoints.js
   --colors <true|false>           Toggle colored logs and code-block highlighting
   --debug                         Verbose logging to stderr
   --print-config                  Print resolved configuration and exit

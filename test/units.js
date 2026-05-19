@@ -174,7 +174,7 @@ const test = (name, fn) => tests.push({ name, fn });
 // ── agent fallback tools ───────────────────────────────────────────────────
 {
   const { classifyTool } = require('../src/tools');
-  const { parseFallbackActions, parseDdgLite } = require('../src/web');
+  const { parseFallbackActions, parseXmlFallbackActions, parseDdgLite } = require('../src/web');
 
   test('agent: parses JSON fallback actions', () => {
     const actions = parseFallbackActions('```json\n{"shmakk_actions":[{"tool":"make_dir","args":{"path":"notes"}},{"tool":"run","args":{"cmd":"ls"}}]}\n```');
@@ -188,6 +188,23 @@ const test = (name, fn) => tests.push({ name, fn });
     const actions = parseFallbackActions('{"shmakk_actions":[{"tool":"unknown","args":{}},{"tool":"write_file","args":{"path":"a.txt","content":"x"}}]}');
     assert.deepStrictEqual(actions, [
       { name: 'write_file', args: { path: 'a.txt', content: 'x' } },
+    ]);
+  });
+
+  test('agent: parses new-style XML fallback actions', () => {
+    const content = 'Here is what I found:\n<tool_calls>\n<invoke name="read_file">\n<parameter name="path" string="true">package.json</parameter>\n</invoke>\n<invoke name="web_search">\n<parameter name="query" string="true">react 19</parameter>\n<parameter name="max_results" string="false">3</parameter>\n</invoke>\n</tool_calls>';
+    const actions = parseXmlFallbackActions(content);
+    assert.deepStrictEqual(actions, [
+      { name: 'read_file', args: { path: 'package.json' } },
+      { name: 'web_search', args: { query: 'react 19', max_results: 3 } },
+    ]);
+  });
+
+  test('agent: parses old-style XML fallback actions', () => {
+    const content = '<tool_call><function=read_file><parameter=path>package.json</parameter></function></tool_call>';
+    const actions = parseXmlFallbackActions(content);
+    assert.deepStrictEqual(actions, [
+      { name: 'read_file', args: { path: 'package.json' } },
     ]);
   });
 

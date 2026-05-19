@@ -46,6 +46,10 @@ Undo link:
 npm run global:unlink
 ```
 
+## Skills
+
+The `skills/` directory contains task-specific markdown files that users can install via `shmakk --install-skill`. To add a skill, create a new `.md` file there following the pattern of existing skills and describe its purpose in the header.
+
 ## Coding guidelines
 - Keep changes focused and minimal.
 - Preserve existing behavior unless intentionally changing it.

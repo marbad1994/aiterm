@@ -93,6 +93,16 @@ Switch profiles mid-session:
 shmakk --profile-set deep
 ```
 
+## Skills
+
+Skills are task-specific markdown files loaded into the agent's context on demand. The `skills/` directory at the repo root contains 24 built-in skills covering areas like `code-review`, `research`, `sysmon`, `logs`, and more.
+
+```bash
+shmakk --install-skill <name>   # install a skill from the built-in library
+shmakk --load-skill <name>      # load an installed skill for this session
+shmakk --list-skills            # show currently loaded skills
+```
+
 ## Environment variables
 
 | Variable | Description |
@@ -110,7 +120,8 @@ shmakk --profile-set deep
 | `shmakk --status` | Check if inside shmakk |
 | `shmakk --stats` | Session statistics |
 | `shmakk --compact` | Clear conversation history |
-| `shmakk --load-skill <name>` | Load a skill |
+| `shmakk --install-skill <name>` | Install a skill from the built-in library |
+| `shmakk --load-skill <name>` | Load an installed skill for this session |
 | `shmakk --list-skills` | List loaded skills |
 | `shmakk --reset` | Reset conversation + task journal |
 | `shmakk --restart` | Restart the inner shell |

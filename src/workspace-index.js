@@ -1,9 +1,26 @@
 const fs = require('fs');
 const path = require('path');
 
-const SKIP_DIRS = new Set(['.git', 'node_modules', '.next', 'dist', 'build', 'coverage']);
+const SKIP_DIRS = new Set(['node_modules', '.next', 'dist', 'build', 'coverage']);
 const MAX_FILE_BYTES = 96 * 1024;
 const CODE_EXTS = new Set(['.js', '.cjs', '.mjs', '.ts', '.tsx', '.jsx', '.py', '.go', '.rs']);
+
+// Detect binary files by checking for null bytes in the first 4 KB.
+// This is the same heuristic used by Git and is fast.
+function isBinaryFile(absPath) {
+  try {
+    const fd = fs.openSync(absPath, 'r');
+    const buf = Buffer.alloc(4096);
+    const n = fs.readSync(fd, buf, 0, 4096, 0);
+    fs.closeSync(fd);
+    for (let i = 0; i < n; i++) {
+      if (buf[i] === 0) return true;
+    }
+    return false;
+  } catch {
+    return true; // unreadable → treat as binary/skip
+  }
+}
 
 function safeRead(p) {
   try { return fs.readFileSync(p, 'utf8'); } catch { return ''; }
@@ -122,6 +139,7 @@ function buildOrRefreshIndex(root) {
     const size = st.size;
     if (prev && prev.mtimeMs === mtimeMs && prev.size === size) continue;
 
+    if (isBinaryFile(abs) || size > MAX_FILE_BYTES * 4) continue;
     const sample = safeRead(abs).slice(0, MAX_FILE_BYTES);
     const hints = extractHints(sample);
     existing.files[rel] = {

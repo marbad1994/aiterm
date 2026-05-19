@@ -120,15 +120,15 @@ function classifyTool(name, args) {
 }
 
 function describeTool(name, args) {
-  if (name === 'read_file') return `read_file ${args.path}${args.mode ? ` [${args.mode}]` : ''}`;
-  if (name === 'list_dir') return `list_dir ${args.path || '.'}`;
-  if (name === 'write_file') return `write_file ${args.path} (${(args.content || '').length} bytes)`;
-  if (name === 'edit_file') return `edit_file ${args.path} (${(args.old_string || '').slice(0, 40)}…)`;
-  if (name === 'make_dir') return `make_dir ${args.path}`;
-  if (name === 'delete_file') return `delete_file ${args.path}`;
-  if (name === 'run') return `run: ${args.cmd}`;
-  if (name === 'web_search') return `web_search ${args.query}`;
-  if (name === 'fetch_url') return `fetch_url ${args.url}`;
+  if (name === 'read_file') return `read ${args.path}${args.mode ? ` (${args.mode})` : ''}`;
+  if (name === 'list_dir') return `list ${args.path || '.'}`;
+  if (name === 'write_file') return `write ${args.path} (${(args.content || '').length} bytes)`;
+  if (name === 'edit_file') return `edit ${args.path}`;
+  if (name === 'make_dir') return `mkdir ${args.path}`;
+  if (name === 'delete_file') return `delete ${args.path}`;
+  if (name === 'run') return `run command (see below)`;
+  if (name === 'web_search') return `web search: "${(args.query || '').slice(0, 100)}"`;
+  if (name === 'fetch_url') return `fetch ${args.url}`;
   return `${name} ${JSON.stringify(args).slice(0, 80)}`;
 }
 
@@ -346,6 +346,8 @@ function parseXmlFallbackActions(content) {
   const allowed = new Set(TOOLS.map((t) => t.function.name));
   const actions = [];
 
+  // Old Anthropic format:
+  //   <tool_call><function=tool_name><parameter=key>val</parameter></function></tool_call>
   const tcRe = /<tool_call>([\s\S]*?)<\/tool_call>/gi;
   let m;
   while ((m = tcRe.exec(text))) {
@@ -360,15 +362,41 @@ function parseXmlFallbackActions(content) {
     let p;
     while ((p = pRe.exec(body))) {
       const k = p[1];
-      const raw = (p[2] || '').trim();
-      if (/^(true|false)$/i.test(raw)) args[k] = /^true$/i.test(raw);
-      else if (/^-?\d+(?:\.\d+)?$/.test(raw)) args[k] = Number(raw);
-      else args[k] = raw;
+      args[k] = parseXmlParamValue(p[2]);
     }
     actions.push({ name, args });
   }
 
+  // New Anthropic format:
+  //   <tool_calls><invoke name="tool_name"><parameter name="key" string="true">val</parameter></invoke></tool_calls>
+  const tcsRe = /<tool_calls>([\s\S]*?)<\/tool_calls>/gi;
+  while ((m = tcsRe.exec(text))) {
+    const block = m[1];
+    const invRe = /<invoke\s+name\s*=\s*"([a-zA-Z0-9_]+)"\s*>([\s\S]*?)<\/invoke>/gi;
+    let inv;
+    while ((inv = invRe.exec(block))) {
+      const name = inv[1];
+      if (!allowed.has(name)) continue;
+      const body = inv[2] || '';
+      const args = {};
+      const pRe = /<parameter\s+name\s*=\s*"([a-zA-Z0-9_]+)"([^>]*?)>([\s\S]*?)<\/parameter>/gi;
+      let p;
+      while ((p = pRe.exec(body))) {
+        const k = p[1];
+        args[k] = parseXmlParamValue(p[3]);
+      }
+      actions.push({ name, args });
+    }
+  }
+
   return actions;
+}
+
+function parseXmlParamValue(raw) {
+  const v = (raw || '').trim();
+  if (/^(true|false)$/i.test(v)) return /^true$/i.test(v);
+  if (/^-?\d+(?:\.\d+)?$/.test(v)) return Number(v);
+  return v;
 }
 
 module.exports = {

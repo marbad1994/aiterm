@@ -18,6 +18,10 @@ function activeSkillMetaPath(cwd = process.cwd()) {
   return require('path').join(cwd, '.shmakk', 'state', 'active-skill.json');
 }
 
+function activePlanPath(cwd = process.cwd()) {
+  return require('path').join(cwd, '.shmakk', 'state', 'active-plan.json');
+}
+
 function isAlive(pid) {
   if (!pid) return false;
   try { process.kill(pid, 0); return true; } catch { return false; }
@@ -176,75 +180,131 @@ function stats() {
   return 0;
 }
 
-function loadSkill(name) {
-  const { loadSkillToWorkspace } = require('./skills');
-  const res = loadSkillToWorkspace(name, process.cwd());
+function loadSkill(name, global = false) {
+  const skills = require('./skills');
+  const fn = global ? skills.loadSkillGlobally : skills.loadSkillToWorkspace;
+  const res = global ? fn(name) : fn(name, process.cwd());
   if (!res.ok) {
     process.stderr.write(`shmakk --load-skill: ${res.error}\n`);
     if (res.searched) process.stderr.write(`searched:\n- ${res.searched.join('\n- ')}\n`);
     return 1;
   }
-  process.stdout.write(`shmakk: loaded skill '${res.name}'\n`);
+  process.stdout.write(`shmakk: loaded skill '${res.name}' (${global ? 'global' : 'workspace'})\n`);
   process.stdout.write(`source: ${res.source}\n`);
   process.stdout.write(`local: ${res.localPath}\n`);
   return 0;
 }
 
 function listSkills() {
-  const { listSkills: ls } = require('./skills');
-  const all = ls(process.cwd());
-  if (!all.length) {
-    process.stdout.write('shmakk: no skills loaded in registry\n');
+  const skills = require('./skills');
+  const workspace = skills.listSkills(process.cwd());
+  const global = skills.listSkillsGlobally();
+
+  if (!workspace.length && !global.length) {
+    process.stdout.write('shmakk: no skills loaded\n');
     return 0;
   }
+
   process.stdout.write('shmakk skills\n');
-  process.stdout.write('------------\n');
-  for (const s of all) {
-    process.stdout.write(`- ${s.name}${s.version ? ` v${s.version}` : ''}${s.active ? ' [active]' : ''}\n`);
+  process.stdout.write('--------------\n');
+
+  if (workspace.length) {
+    process.stdout.write('[workspace]\n');
+    for (const s of workspace) {
+      process.stdout.write(`- ${s.name}${s.version ? ` v${s.version}` : ''}${s.active ? ' [active]' : ''}\n`);
+    }
   }
+
+  if (global.length) {
+    if (workspace.length) process.stdout.write('\n');
+    process.stdout.write('[global]\n');
+    for (const s of global) {
+      process.stdout.write(`- ${s.name}${s.version ? ` v${s.version}` : ''}${s.active ? ' [active]' : ''}\n`);
+    }
+  }
+
   return 0;
 }
 
 function skillStatus() {
-  const { skillStatus: ss } = require('./skills');
-  const st = ss(process.cwd());
+  const skills = require('./skills');
+  const wst = skills.skillStatus(process.cwd());
+  const gst = skills.skillStatusGlobally();
+  const total = wst.total + gst.total;
+  const active = wst.active || gst.active;
+
   process.stdout.write('shmakk skill status\n');
-  process.stdout.write('------------------\n');
-  process.stdout.write(`total: ${st.total}\n`);
-  if (!st.active) {
+  process.stdout.write('-------------------\n');
+  process.stdout.write(`total: ${total}\n`);
+  if (!active) {
     process.stdout.write('active: none\n');
     return 0;
   }
-  process.stdout.write(`active: ${st.active.name}\n`);
-  process.stdout.write(`version: ${st.active.version}\n`);
-  process.stdout.write(`loaded_at: ${st.active.loadedAt || 'n/a'}\n`);
-  process.stdout.write(`bytes: ${st.active.bytes || 0}\n`);
-  process.stdout.write(`source: ${st.active.source || 'n/a'}\n`);
+  process.stdout.write(`active: ${active.name}\n`);
+  process.stdout.write(`version: ${active.version}\n`);
+  process.stdout.write(`loaded_at: ${active.loadedAt || 'n/a'}\n`);
+  process.stdout.write(`bytes: ${active.bytes || 0}\n`);
+  process.stdout.write(`source: ${active.source || 'n/a'}\n`);
   return 0;
 }
 
 function unloadSkill(name) {
-  const { unloadSkill: us } = require('./skills');
-  const res = us(name, process.cwd());
+  const skills = require('./skills');
+  // Try workspace first
+  let res = skills.unloadSkill(name, process.cwd());
+  let location = 'workspace';
+  // If not in workspace, try global
+  if (!res.ok) {
+    res = skills.unloadSkillGlobally(name);
+    location = 'global';
+  }
   if (!res.ok) {
     process.stderr.write(`shmakk --unload-skill: ${res.error}\n`);
     return 1;
   }
-  process.stdout.write(`shmakk: unloaded skill '${res.name}'\n`);
+  process.stdout.write(`shmakk: unloaded skill '${res.name}' from ${location}\n`);
   return 0;
 }
 
-async function installSkill(url) {
-  const { installSkillFromUrl } = require('./skills');
-  const res = await installSkillFromUrl(url, process.cwd());
+async function installSkill(url, global = false) {
+  const skills = require('./skills');
+  const fn = global ? skills.installSkillFromUrlGlobally : skills.installSkillFromUrl;
+  const res = global ? await fn(url) : await fn(url, process.cwd());
   if (!res.ok) {
     process.stderr.write(`shmakk --install-skill: ${res.error}\n`);
     return 1;
   }
-  process.stdout.write(`shmakk: installed + loaded skill '${res.name}'\n`);
+  process.stdout.write(`shmakk: installed + loaded skill '${res.name}' (${global ? 'global' : 'workspace'})\n`);
   process.stdout.write(`source: ${res.source}\n`);
   process.stdout.write(`local: ${res.localPath}\n`);
   return 0;
 }
 
-module.exports = { status, exitParent, restartParent, resetConversation, setProfileAndRestart, profileSignalPath, resumeStatus, compactContext, stats, loadSkill, listSkills, skillStatus, unloadSkill, installSkill };
+function showPlan() {
+  const fs = require('fs');
+  const p = activePlanPath();
+  try {
+    if (!fs.existsSync(p)) {
+      process.stdout.write('shmakk: no active plan\n');
+      return 0;
+    }
+    const plan = JSON.parse(fs.readFileSync(p, 'utf8'));
+    const STATUS_CHAR = { completed: '✓', failed: '✗', skipped: '–', in_progress: '▸', pending: ' ' };
+    process.stdout.write(`shmakk plan: ${plan.title}\n`);
+    process.stdout.write(`status: ${plan.status || 'unknown'} · updated: ${(plan.updatedAt || '').slice(0, 19)}\n`);
+    process.stdout.write('─'.repeat(44) + '\n');
+    for (const t of plan.tasks || []) {
+      const icon = STATUS_CHAR[t.status] || ' ';
+      process.stdout.write(`  ${icon} ${t.id}. ${t.title}\n`);
+    }
+    const done = (plan.tasks || []).filter((t) => t.status === 'completed').length;
+    const total = (plan.tasks || []).length;
+    process.stdout.write(`\n${done}/${total} tasks completed\n`);
+    return 0;
+  } catch (e) {
+    process.stderr.write(`shmakk --show-plan: ${e.message}\n`);
+    return 1;
+  }
+}
+
+module.exports = { status, exitParent, restartParent, resetConversation, setProfileAndRestart, profileSignalPath, resumeStatus, compactContext, stats, loadSkill, listSkills, skillStatus, unloadSkill, installSkill, showPlan };

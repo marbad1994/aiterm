@@ -38,7 +38,7 @@ const FLAGS = [
   { flag: '--workspace', arg: '<path>', desc: 'Override workspace root' },
   { flag: '--profile', arg: '<name>', desc: 'Startup profile (tiny|balanced|deep|builder|large-app)' },
   { flag: '--profile-set', arg: '<name>', desc: 'Switch profile and restart' },
-  { flag: '--endpoint', arg: '<name>', desc: 'Use endpoint preset from .shmakk/endpoints.json' },
+  { flag: '--endpoint', arg: '<name>', desc: 'Use endpoint preset from ~/.config/shmakk/endpoints.js' },
   { flag: '--colors', arg: '<true|false>', desc: 'Toggle ANSI colors' },
   { flag: '--load-skill', arg: '<name>', desc: 'Load a skill into workspace state' },
   { flag: '--unload-skill', arg: '<name>', desc: 'Remove skill from registry' },

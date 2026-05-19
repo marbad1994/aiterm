@@ -5,6 +5,8 @@
 const { startSession } = require('./pty');
 const { correct } = require('./correction');
 const { runAgent, clearTaskJournal } = require('./agent');
+const { route: routeToSpecialist } = require('./coordinator');
+const { shouldPlan, generatePlan, formatPlan, savePlan, clearPlan } = require('./planner');
 const { clearIndex } = require('./workspace-index');
 const { loadGlossary } = require('./glossary');
 const { isConfigured } = require('./llm');
@@ -75,25 +77,72 @@ function makeToolConfirm(opts, ask, out, getAbort) {
       audit.append({ kind: 'tool-allowed', name, args, via: fileCreateAllowed ? 'yes-files' : 'auto-safe' });
       return true;
     }
-    out([
+    const lines = [
       '\x1b[36m── shmakk tool ──\x1b[0m',
-      `  action:    ${description}`,
-      `  safety:    ${safety}`,
-      `  auto-mode: ${wouldAuto ? 'would auto-run' : 'would ask confirmation'}`,
-      '',
-    ].join('\r\n'));
-    const whyText = [
-      '',
-      '\x1b[36mWhy this tool?\x1b[0m',
-      `- The agent needs to: ${description}`,
-      `- Safety classification: ${safety}`,
-      `- Auto-mode policy: ${wouldAuto ? 'would auto-run in this mode' : 'requires confirmation in this mode'}`,
-      '- This action is required to continue the current task.',
-      '',
-    ].join('\r\n');
+      `  action:  ${description}`,
+      `  path:    ${args.path || '-'}`,
+      `  safety:  ${safety}`,
+    ];
+    if (name === 'run' && args.cmd) {
+      lines.push(`  command:`);
+      for (const cmdLine of String(args.cmd).split('\n')) {
+        lines.push(`    $ ${cmdLine}`);
+      }
+    }
+    if (name === 'write_file' && args.content) {
+      const preview = String(args.content).slice(0, 200);
+      lines.push(`  preview: ${preview}${preview.length >= 200 ? '…' : ''}`);
+    }
+    if (name === 'edit_file' && args.old_string) {
+      const oldPreview = String(args.old_string).slice(0, 80);
+      lines.push(`  replace: "${oldPreview}${oldPreview.length >= 80 ? '…' : ''}"`);
+    }
+    lines.push('');
+    out(lines.join('\r\n'));
+    const toolExplain = {
+      read_file: 'Reads a file from your workspace to analyze it.',
+      list_dir: 'Lists directory contents to explore project structure.',
+      write_file: 'Creates or overwrites a file in your workspace.',
+      edit_file: 'Makes a precise string replacement in an existing file.',
+      make_dir: 'Creates a new directory (with parents if needed).',
+      delete_file: 'Deletes a file from your workspace.',
+      run: 'Runs a shell command in your workspace directory.',
+      web_search: 'Searches the web for current information.',
+      fetch_url: 'Fetches content from a URL.',
+    };
+    const safetyExplain = {
+      safe: 'No destructive potential — reads, lists, searches, or safe shell commands.',
+      uncertain: 'Could modify files or run commands with side effects.',
+      unsafe: 'Potentially destructive — deletes, or commands flagged as dangerous.',
+    };
+    const showWhy = () => {
+      const w = [
+        '',
+        '\x1b[36m── why this tool? ──\x1b[0m',
+        `  tool:   ${name}`,
+        `  what:   ${toolExplain[name] || 'Executes the requested action.'}`,
+        `  safety: ${safety} — ${safetyExplain[safety] || 'unknown risk level'}`,
+      ];
+      if (name === 'run' && args.cmd) {
+        w.push(`  command:`);
+        for (const cmdLine of String(args.cmd).split('\n')) {
+          w.push(`    $ ${cmdLine}`);
+        }
+      }
+      if (name === 'write_file' && args.content) {
+        const preview = String(args.content).slice(0, 300);
+        w.push(`  preview: ${preview}${preview.length >= 300 ? '…' : ''}`);
+      }
+      if (name === 'edit_file') {
+        w.push(`  old: "${String(args.old_string || '').slice(0, 120)}"`);
+        w.push(`  new: "${String(args.new_string || '').slice(0, 120)}"`);
+      }
+      w.push('');
+      out(w.join('\r\n'));
+    };
     const ok = await ask('Run?', wouldAuto, {
       onCancel: getAbort,
-      onWhy: () => out(whyText),
+      onWhy: showWhy,
     });
     audit.append({ kind: ok ? 'tool-allowed' : 'tool-declined', name, args });
     return ok;
@@ -171,29 +220,69 @@ async function runOneSession(opts, registerSession) {
   }
 
   // ── Ctrl-C-aware AI work wrapper ──
-  // Installs a stdin tap that watches for 0x03 → aborts the controller.
-  // Other bytes pass through to the shell so the user can keep typing.
-  // In STS mode, Ctrl+C also tears down TTS, recording, and the voice
-  // loop — otherwise the user is trapped because this handler sits on
-  // top of the global one and would normally eat the keypress.
+  // Single Ctrl+C: soft abort (paused) — allow graceful recovery
+  // Double Ctrl+C within ~400ms: hard abort (stopped) — immediate exit
+  // In STS mode, voice machinery is torn down on first Ctrl+C.
+  const CTRL_C_DOUBLE_PRESS_MS = 400;
+
   async function withAI(fn) {
     const ctrl = new AbortController();
     setMaxListeners(0, ctrl.signal);
+    let ctrlCCount = 0;
+    let ctrlCTimer = null;
+
     const release = session.captureStdin((data) => {
       const cut = findCtrlC(data);
       if (cut === -1) {
         session.childWrite(data);
         return;
       }
-      if (cut > 0) session.childWrite(data.slice(0, cut));
+
+      // Ctrl+C detected. Pass through any data before it.
+      if (cut > 0) {
+        session.childWrite(data.slice(0, cut));
+      }
+
+      ctrlCCount++;
+
+      // Tear down voice on any Ctrl+C
       if (opts.sts || opts.tts || opts.stt) {
         try { fullVoiceTeardown(); } catch {}
       }
-      ctrl.abort(new Error('interrupted'));
+
+      if (ctrlCCount === 1) {
+        // First Ctrl+C: soft abort with "paused" reason.
+        // Wait 400ms to see if a second press comes.
+        out('\r\n\x1b[33m[shmakk] paused — press Ctrl+C again to stop\x1b[0m\r\n');
+        ctrl.abort(new Error('paused'));
+
+        ctrlCTimer = setTimeout(() => {
+          ctrlCTimer = null;
+          // 400ms elapsed — no double press. Agent is already aborted,
+          // but we don't show any resume message since the pause was already signaled.
+        }, CTRL_C_DOUBLE_PRESS_MS);
+      } else if (ctrlCCount === 2) {
+        // Second Ctrl+C: hard abort with "stopped" reason.
+        // Abort is already in effect, but update the error reason for clarity.
+        if (ctrlCTimer) {
+          clearTimeout(ctrlCTimer);
+          ctrlCTimer = null;
+        }
+        out('\x1b[33m[shmakk] stopped\x1b[0m\r\n');
+        // Controller already aborted, but call abort again to update error state
+        try {
+          ctrl.abort(new Error('stopped'));
+        } catch {
+          // ignore — already aborted
+        }
+      }
+      // Subsequent Ctrl+C presses are ignored (controller already aborted)
     });
+
     try {
       return await fn(ctrl);
     } finally {
+      if (ctrlCTimer) clearTimeout(ctrlCTimer);
       release();
     }
   }
@@ -244,15 +333,17 @@ async function runOneSession(opts, registerSession) {
       await withAI(async (ctrl) => {
         out('\x1b[36m[shmakk voice→task] (Ctrl-C to interrupt)\x1b[0m\r\n');
         try {
+          const voiceRouting = routeToSpecialist(text);
           const updated = await runAgent({
             input: text, roots: currentRoots(), glossary,
             confirmTool: makeToolConfirm(opts, ask, out, () => ctrl.abort()),
             write: out,
             signal: ctrl.signal,
             history,
-            profile: opts.profile,
+            profile: opts.profile || voiceRouting.profile || 'balanced',
             colors: colorsEnabled,
             voiceMode: true,
+            specialistHint: voiceRouting.specialistHint,
           });
           history = trimHistory(updated || history);
           if ((opts.tts || opts.sts) && updated && updated.length) {
@@ -304,8 +395,16 @@ async function runOneSession(opts, registerSession) {
           }
           session.childWrite('\r');
         } catch (e) {
-          if (isAbortError(e)) out('\r\n\x1b[33m[shmakk] interrupted\x1b[0m\r\n');
-          else out(`\r\n[shmakk] task error: ${e.message}\r\n`);
+          if (isAbortError(e)) {
+            // Error message distinguishes between pause, stop, and other aborts
+            if (e.message === 'paused' || e.message === 'stopped') {
+              // Already showed message in Ctrl+C handler
+            } else {
+              out('\r\n\x1b[33m[shmakk] interrupted\x1b[0m\r\n');
+            }
+          } else {
+            out(`\r\n[shmakk] task error: ${e.message}\r\n`);
+          }
         }
       });
     } finally {
@@ -567,57 +666,181 @@ async function runOneSession(opts, registerSession) {
       } else {
         discardPending();
       }
-      out('\x1b[36m[shmakk task] (Ctrl-C to interrupt)\x1b[0m\r\n');
-      try {
-        const updated = await runAgent({
-          input: cmd, roots: currentRoots(), glossary,
-          confirmTool: makeToolConfirm(opts, ask, out, () => ctrl.abort()),
-          write: out,
-          signal: ctrl.signal,
-          history,
-          profile: opts.profile,
-          colors: colorsEnabled,
-        });
-        history = trimHistory(updated || history);
+      const routing = routeToSpecialist(cmd);
+      const agentProfile = opts.profile || routing.profile || 'balanced';
+      const agentOpts = {
+        roots: currentRoots(), glossary,
+        confirmTool: makeToolConfirm(opts, ask, out, () => ctrl.abort()),
+        write: out,
+        signal: ctrl.signal,
+        profile: agentProfile,
+        colors: colorsEnabled,
+        specialistHint: routing.specialistHint,
+      };
 
-        // TTS: speak the agent's response aloud if --tts is active
-        if (opts.tts && updated && updated.length) {
-          const lastAssistant = [...updated].reverse().find((m) => m.role === 'assistant');
-          if (lastAssistant?.content) {
-            const text = typeof lastAssistant.content === 'string'
-              ? lastAssistant.content
-              : lastAssistant.content.map((c) => c.text || '').join(' ');
-            if (text) {
-              // Interrupt any active voice recording so the mic doesn't
-              // pick up TTS audio as the next voice command.
-              if (opts.sts || opts.stt) {
-                try { getVoiceService()._killRecorder(); } catch {}
-              }
-              // Pause STS voice loop while TTS is speaking.
-              // Use a generation counter so only the latest speak's settle
-              // flips ttsSpeaking back to false — prevents an earlier,
-              // already-cancelled speak from unpausing the mic mid-sentence.
-              if (session._stsFlags) session._stsFlags.setTtsSpeaking(true);
-              session._ttsGen = (session._ttsGen || 0) + 1;
-              const myGen = session._ttsGen;
-              const ttsVoice = opts.ttsVoice || process.env.SHMAKK_TTS_VOICE || 'af_heart';
-              const tts = getTTSService();
-              const settle = (err) => {
-                if (session._ttsGen !== myGen) return;
-                if (session._stsFlags) session._stsFlags.setTtsSpeaking(false);
-                if (err && opts.debug) process.stderr.write(`[shmakk] tts: ${err.message}\n`);
-              };
-              tts.speak(text, { voice: ttsVoice }).then(() => settle()).catch(settle);
-            }
-          }
+      // ── Plan-first execution ──
+      // For complex multi-step requests, generate a plan and ask for approval
+      // before running anything. Prefix input with '!' to bypass.
+      let usedPlan = false;
+      if (!opts.review && shouldPlan(cmd)) {
+        out(dim('[shmakk] generating plan…', colorsEnabled) + '\r\n');
+        let plan = null;
+        try {
+          plan = await generatePlan(cmd, { signal: ctrl.signal });
+        } catch (e) {
+          if (isAbortError(e)) throw e;
+          out(dim('[shmakk] plan generation failed — running directly', colorsEnabled) + '\r\n');
         }
 
-        // Force the interactive shell to redraw its prompt so the user is
-        // returned cleanly to the terminal without needing to press Enter.
-        session.childWrite('\r');
-      } catch (e) {
-        if (isAbortError(e)) out('\r\n\x1b[33m[shmakk] interrupted\x1b[0m\r\n');
-        else out(`\r\n[shmakk] task error: ${e.message}\r\n`);
+        if (plan) {
+          out(formatPlan(plan));
+          const approved = await ask('Approve plan?', true, {
+            onCancel: () => ctrl.abort(),
+          });
+
+          if (!approved) {
+            out('\x1b[33m[shmakk] plan rejected — rephrase your request or prefix with ! to run directly\x1b[0m\r\n');
+            session.childWrite('\r');
+            return;
+          }
+
+          // Execute each task in order
+          plan.status = 'executing';
+          savePlan(currentRoots()[0], plan);
+          usedPlan = true;
+
+          let lastUpdated = null;
+          for (let i = 0; i < plan.tasks.length; i++) {
+            if (ctrl.signal.aborted) break;
+            const task = plan.tasks[i];
+            plan.currentTaskIndex = i;
+            plan.tasks[i].status = 'in_progress';
+            savePlan(currentRoots()[0], plan);
+
+            out(`\x1b[36m[${i + 1}/${plan.tasks.length}] ${task.title}\x1b[0m\r\n`);
+            if (task.description) {
+              out(dim(`    ${task.description}`, colorsEnabled) + '\r\n');
+            }
+
+            const taskInput = `[Task ${i + 1} of ${plan.tasks.length}: ${task.title}]\n${task.description}\n\nOverall goal: ${plan.title}\n\nOriginal request: ${cmd}`;
+            try {
+              const updated = await runAgent({ ...agentOpts, input: taskInput, history });
+              history = trimHistory(updated || history);
+              lastUpdated = updated;
+              plan.tasks[i].status = 'completed';
+              plan.tasks[i].completedAt = new Date().toISOString();
+              savePlan(currentRoots()[0], plan);
+            } catch (e) {
+              if (isAbortError(e)) {
+                plan.tasks[i].status = 'failed';
+                savePlan(currentRoots()[0], plan);
+                throw e;
+              }
+              plan.tasks[i].status = 'failed';
+              savePlan(currentRoots()[0], plan);
+              out(`\r\n\x1b[31m[shmakk] task ${i + 1} failed: ${e.message}\x1b[0m\r\n`);
+              const skip = await ask(`Skip task ${i + 1} and continue?`, false, {
+                onCancel: () => ctrl.abort(),
+              });
+              if (!skip) {
+                plan.status = 'aborted';
+                savePlan(currentRoots()[0], plan);
+                out('\x1b[33m[shmakk] plan aborted\x1b[0m\r\n');
+                session.childWrite('\r');
+                return;
+              }
+              plan.tasks[i].status = 'skipped';
+              savePlan(currentRoots()[0], plan);
+            }
+          }
+
+          const completed = plan.tasks.filter((t) => t.status === 'completed').length;
+          const skipped = plan.tasks.filter((t) => t.status === 'skipped').length;
+          plan.status = 'completed';
+          savePlan(currentRoots()[0], plan);
+          out(`\x1b[32m[shmakk] plan done: ${completed}/${plan.tasks.length} tasks completed${skipped ? `, ${skipped} skipped` : ''}\x1b[0m\r\n`);
+
+          // TTS for the last task's response
+          if (opts.tts && lastUpdated && lastUpdated.length) {
+            const lastAssistant = [...lastUpdated].reverse().find((m) => m.role === 'assistant');
+            if (lastAssistant?.content) {
+              const ttsText = typeof lastAssistant.content === 'string'
+                ? lastAssistant.content
+                : lastAssistant.content.map((c) => c.text || '').join(' ');
+              if (ttsText) {
+                if (opts.sts || opts.stt) { try { getVoiceService()._killRecorder(); } catch {} }
+                if (session._stsFlags) session._stsFlags.setTtsSpeaking(true);
+                session._ttsGen = (session._ttsGen || 0) + 1;
+                const myGen = session._ttsGen;
+                const ttsVoice = opts.ttsVoice || process.env.SHMAKK_TTS_VOICE || 'af_heart';
+                const tts = getTTSService();
+                const settle = (err) => {
+                  if (session._ttsGen !== myGen) return;
+                  if (session._stsFlags) session._stsFlags.setTtsSpeaking(false);
+                  if (err && opts.debug) process.stderr.write(`[shmakk] tts: ${err.message}\n`);
+                };
+                tts.speak(ttsText, { voice: ttsVoice }).then(() => settle()).catch(settle);
+              }
+            }
+          }
+          session.childWrite('\r');
+        }
+      }
+
+      // ── Standard single-shot execution ──
+      if (!usedPlan && !ctrl.signal.aborted) {
+        const taskIndicator = routing.indicator
+          ? `\x1b[36m[shmakk task · ${routing.indicator}] (Ctrl-C to interrupt)\x1b[0m\r\n`
+          : '\x1b[36m[shmakk task] (Ctrl-C to interrupt)\x1b[0m\r\n';
+        out(taskIndicator);
+        try {
+          const updated = await runAgent({ ...agentOpts, input: cmd, history });
+          history = trimHistory(updated || history);
+
+          // TTS: speak the agent's response aloud if --tts is active
+          if (opts.tts && updated && updated.length) {
+            const lastAssistant = [...updated].reverse().find((m) => m.role === 'assistant');
+            if (lastAssistant?.content) {
+              const ttsText = typeof lastAssistant.content === 'string'
+                ? lastAssistant.content
+                : lastAssistant.content.map((c) => c.text || '').join(' ');
+              if (ttsText) {
+                if (opts.sts || opts.stt) { try { getVoiceService()._killRecorder(); } catch {} }
+                if (session._stsFlags) session._stsFlags.setTtsSpeaking(true);
+                session._ttsGen = (session._ttsGen || 0) + 1;
+                const myGen = session._ttsGen;
+                const ttsVoice = opts.ttsVoice || process.env.SHMAKK_TTS_VOICE || 'af_heart';
+                const tts = getTTSService();
+                const settle = (err) => {
+                  if (session._ttsGen !== myGen) return;
+                  if (session._stsFlags) session._stsFlags.setTtsSpeaking(false);
+                  if (err && opts.debug) process.stderr.write(`[shmakk] tts: ${err.message}\n`);
+                };
+                tts.speak(ttsText, { voice: ttsVoice }).then(() => settle()).catch(settle);
+              }
+            }
+          }
+
+          // Force the interactive shell to redraw its prompt so the user is
+          // returned cleanly to the terminal without needing to press Enter.
+          session.childWrite('\r');
+        } catch (e) {
+          if (isAbortError(e)) {
+            if (e.message === 'paused' || e.message === 'stopped') {
+              // Already showed message in Ctrl+C handler
+            } else {
+              out('\r\n\x1b[33m[shmakk] interrupted\x1b[0m\r\n');
+            }
+          } else {
+            out(`\r\n[shmakk] task error: ${e.message}\r\n`);
+          }
+        }
+      } else if (!usedPlan && ctrl.signal.aborted) {
+        // aborted before reaching standard execution (e.g. during plan reject/abort)
+        const reason = ctrl.signal.reason?.message;
+        if (reason !== 'paused' && reason !== 'stopped') {
+          out('\r\n\x1b[33m[shmakk] interrupted\x1b[0m\r\n');
+        }
       }
     });
   });
