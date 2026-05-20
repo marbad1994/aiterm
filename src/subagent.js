@@ -19,6 +19,9 @@ async function runAutoSubagents({ client, input, roots, signal }) {
     'Concrete step-by-step implementation plan with minimal reads',
   ].slice(0, n);
 
+  const safeInput = String(input || '').replace(/[\r\n]+/g, ' ').trim();
+  const safeRoots = (roots || []).map(r => String(r).replace(/[\r\n]+/g, ' ')).filter(Boolean);
+
   const out = [];
   for (let i = 0; i < focuses.length; i++) {
     try {
@@ -29,7 +32,7 @@ async function runAutoSubagents({ client, input, roots, signal }) {
         tool_choice: 'none',
         messages: [
           { role: 'system', content: `You are subagent ${i + 1}. Read-only planning only. No tool calls. Be concise.` },
-          { role: 'user', content: `Workspace roots: ${roots.join(', ')}\nTask: ${input}\nFocus: ${focuses[i]}\nReturn bullet points only.` },
+          { role: 'user', content: `Workspace roots: ${safeRoots.join(', ')}\nTask: ${safeInput}\nFocus: ${focuses[i]}\nReturn bullet points only.` },
         ],
       }, { signal });
       const text = String(r.choices?.[0]?.message?.content || '').trim();

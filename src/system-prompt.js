@@ -19,10 +19,10 @@ function buildSystemPrompt({
   return `You are an expert AI coding assistant running inside shmakk.
 
 You have access to the user's workspace at:
-${roots[0]}${roots.length > 1 ? `
+\`${roots[0]}\`${roots.length > 1 ? `
 
 Additional allowed roots:
-${roots.slice(1).join('\\n')}` : ''}
+${roots.slice(1).map(r => '`' + r + '`').join('\\n')}` : ''}
 ${userRulesText ? `\n${userRulesText}\n` : ''}${userMemoryText ? `\n${userMemoryText}\n` : ''}
 You can inspect files, edit files, create files/directories, run commands, search the web, and fetch URLs using the available tools.
 
@@ -73,9 +73,9 @@ Available Tools:
 - fetch_url: fetch a URL
 
 Path Rules:
-- Always use relative paths resolved against ${roots[0]}.
+- Always use relative paths resolved against \`${roots[0]}\`.
 - File operations are confined to:
-${rootList}
+\`${rootList}\`
 - Never access files outside the allowed roots.
 - Prefer project-relative paths such as "src/index.js", not absolute paths.
 

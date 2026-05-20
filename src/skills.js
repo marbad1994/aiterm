@@ -226,11 +226,27 @@ function readActiveSkill(cwd = process.cwd()) {
   }
 }
 
+// Simple mtime-based cache for renderActiveSkillForPrompt.
+// Invalidated when the underlying skill file changes on disk.
+const _skillPromptCache = { key: '', value: '' };
+
 function renderActiveSkillForPrompt(cwd = process.cwd(), maxBytes = DEFAULT_RENDER_BYTES) {
   const skill = readActiveSkill(cwd);
-  if (!skill || !skill.content) return '';
+  if (!skill || !skill.content) {
+    _skillPromptCache.key = '';
+    _skillPromptCache.value = '';
+    return '';
+  }
+  let mtime = 0;
+  try { mtime = fs.statSync(skill.localPath).mtimeMs; } catch {}
+  const cacheKey = `${cwd}|${skill.localPath}|${mtime}|${maxBytes}`;
+  if (_skillPromptCache.key === cacheKey) return _skillPromptCache.value;
+
   const body = String(skill.content || '').slice(0, Math.max(1000, Number(maxBytes) || DEFAULT_RENDER_BYTES));
-  return `Active loaded skill (${skill.name}${skill.version ? ` v${skill.version}` : ''}) instructions:\n${body}`;
+  const prompt = `Active loaded skill (${skill.name}${skill.version ? ` v${skill.version}` : ''}) instructions:\n${body}`;
+  _skillPromptCache.key = cacheKey;
+  _skillPromptCache.value = prompt;
+  return prompt;
 }
 
 function listSkills(cwd = process.cwd()) {

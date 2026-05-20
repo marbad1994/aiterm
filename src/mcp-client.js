@@ -226,7 +226,19 @@ class MCPServer {
         ...(images.length ? { images } : {}),
       };
     } catch (e) {
-      return { error: `MCP call failed: ${e.message}` };
+      // Distinguish transport-level errors (retryable) from tool-level errors.
+      const msg = e.message || '';
+      const isRetryable = (
+        msg.includes('timeout') ||
+        msg.includes('ECONNREFUSED') ||
+        msg.includes('ECONNRESET') ||
+        msg.includes('EPIPE') ||
+        msg.includes('server stopping') ||
+        msg.includes('server error') ||
+        msg.includes('server exited') ||
+        msg.includes('not running')
+      );
+      return { error: `MCP call failed: ${msg}`, isRetryable };
     }
   }
 

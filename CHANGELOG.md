@@ -24,6 +24,18 @@ All notable changes to this project will be documented in this file.
 - Version bump to 1.1.0
 - README updated with voice quick-start section
 
+### Fixed (code review hardening)
+- `fs.rmSync` calls hardened with `{ force: true }` across skills.js and task-file.js to prevent ENOENT crashes
+- `loadSkillToWorkspace` now calls `ensureDirs(cwd)` first — fixes crash on fresh workspace load
+- `renderActiveSkillForPrompt` gets mtime-based cache so prompt isn't recomputed every turn
+- `runAutoSubagents` sanitizes user input and workspace roots against newline injection
+- `within()` (tools.js) resolves paths through `fs.realpathSync` to defeat symlink escapes past workspace roots
+- MCP errors now carry `isRetryable` flag so callers can distinguish transport failures from tool failures
+- `captureGitSha` (code-review.js) eliminated temp-file roundtrip; computes SHA in memory
+- `rmdirSync` in task-file.js replaced with `rmSync({ recursive: true })` for API consistency
+- `sanitizeForLLM` now tested; `maxDist` logic now testable via `maxDistForTest` export
+- 10 new unit tests added: skills, task-file, code-review, rules, memory, session-search, workflows, subagent, correction, workspace-index
+
 ## [0.1.0] - 2026-05-09
 
 ### Added

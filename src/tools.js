@@ -15,14 +15,36 @@ const MAX_FILE_BYTES = 64 * 1024;
 // Resolve a path against a list of allowed roots. Returns the absolute
 // path if it lies inside any root, or null otherwise. The first root in
 // the list is used as the base for relative resolution.
+//
+// Uses realpath to defeat symlink traversal: a path that appears to be
+// inside a root via lexical resolution but points outside via a symlink
+// chain will be rejected.
 function within(roots, p) {
   if (!roots || !roots.length) return null;
   if (typeof p !== 'string' || !p.trim()) return null;
   const base = path.resolve(roots[0]);
   const abs = path.isAbsolute(p) ? path.resolve(p) : path.resolve(base, p);
+
+  // Resolve to real path to defeat symlink escapes.
+  let realAbs;
+  try {
+    realAbs = fs.realpathSync(abs);
+  } catch {
+    // Path doesn't exist yet (e.g. write_file target).
+    // Resolve the deepest existing ancestor to guard against symlinks
+    // in parent directories.
+    let d = path.dirname(abs);
+    while (d && d !== path.dirname(d)) {
+      try { realAbs = path.join(fs.realpathSync(d), path.relative(d, abs)); break; }
+      catch { d = path.dirname(d); }
+    }
+    if (!realAbs) return null;
+  }
+
   for (const r of roots) {
-    const rr = path.resolve(r);
-    if (abs === rr || abs.startsWith(rr + path.sep)) return abs;
+    let rr;
+    try { rr = fs.realpathSync(r); } catch { rr = path.resolve(r); }
+    if (realAbs === rr || realAbs.startsWith(rr + path.sep)) return abs;
   }
   return null;
 }

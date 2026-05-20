@@ -1,4 +1,5 @@
 const fs = require('fs');
+const fsp = require('fs/promises');
 const path = require('path');
 
 const SKIP_DIRS = new Set(['node_modules', '.next', 'dist', 'build', 'coverage']);
@@ -88,16 +89,16 @@ function resolveImportTarget(rel, imp, allFiles) {
   return null;
 }
 
-function walkFiles(root, dir = root, out = []) {
+async function walkFiles(root, dir = root, out = []) {
   let ents = [];
-  try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  try { ents = await fsp.readdir(dir, { withFileTypes: true }); } catch { return out; }
   for (const e of ents) {
     const abs = path.join(dir, e.name);
     const rel = path.relative(root, abs);
     if (!rel) continue;
     if (e.isDirectory()) {
       if (SKIP_DIRS.has(e.name)) continue;
-      walkFiles(root, abs, out);
+      await walkFiles(root, abs, out);
       continue;
     }
     if (!e.isFile()) continue;
@@ -121,10 +122,10 @@ function saveIndex(root, index) {
   fs.writeFileSync(p, JSON.stringify(index), 'utf8');
 }
 
-function buildOrRefreshIndex(root) {
+async function buildOrRefreshIndex(root) {
   const now = Date.now();
   const existing = loadIndex(root) || { root, files: {}, updatedAt: 0 };
-  const seen = new Set(walkFiles(root));
+  const seen = new Set(await walkFiles(root));
 
   for (const rel of Object.keys(existing.files)) {
     if (!seen.has(rel)) delete existing.files[rel];

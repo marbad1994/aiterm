@@ -156,4 +156,7 @@ async function correct({ input, glossary, signal: _unused }) {
   };
 }
 
-module.exports = { correct, looksLikeNaturalLanguage };
+module.exports = { correct, looksLikeNaturalLanguage, maxDistForTest: (input) => {
+  const wlen = String(input || '').trim().length;
+  return Math.max(1, Math.min(3, Math.floor(wlen / 2) + 1));
+}};
