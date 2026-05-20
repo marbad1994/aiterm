@@ -184,7 +184,9 @@ function parseFallbackActions(content) {
 // ── XML fallback action extraction ──────────────────────────────────────────
 
 function parseXmlFallbackActions(content) {
-  const text = String(content || '');
+  // Normalize DeepSeek DSML format: <｜｜DSML｜｜tool_calls> → <tool_calls>
+  // DSML uses fullwidth vertical bars (U+FF5C) around tag names.
+  const text = String(content || '').replace(/<(\/?)(?:｜+DSML)?｜+/g, '<$1').replace(/｜+>/g, '>');
   if (!text) return [];
   const allowed = new Set(['read_file', 'list_dir', 'web_search', 'fetch_url',
     'write_file', 'edit_file', 'make_dir', 'delete_file', 'run']);

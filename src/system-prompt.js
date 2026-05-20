@@ -12,6 +12,9 @@ function buildSystemPrompt({
   runtimeProfile,
   voiceMode = false,
   specialistHint = null,
+  mcpToolHint = null,
+  userRulesText = null,
+  userMemoryText = null,
 }) {
   return `You are an expert AI coding assistant running inside shmakk.
 
@@ -20,7 +23,7 @@ ${roots[0]}${roots.length > 1 ? `
 
 Additional allowed roots:
 ${roots.slice(1).join('\\n')}` : ''}
-
+${userRulesText ? `\n${userRulesText}\n` : ''}${userMemoryText ? `\n${userMemoryText}\n` : ''}
 You can inspect files, edit files, create files/directories, run commands, search the web, and fetch URLs using the available tools.
 
 Your primary objective is to solve the user's coding task correctly by using the actual workspace state, not assumptions.
@@ -258,6 +261,7 @@ Otherwise output only:
 ${indexHint}
 ${activeSkillText ? `\n\n${activeSkillText}` : ''}
 ${specialistHint ? `\n\n${specialistHint.trim()}` : ''}
+${mcpToolHint ? `\n\n${mcpToolHint}` : ''}
 ${voiceMode ? `\n\nVOICE MODE: The user is speaking to you. Keep every reply under 2 sentences. No bullet points, no markdown, no code blocks unless explicitly asked. Speak like a human, not a document.` : ''}
 `;
 }

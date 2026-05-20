@@ -19,6 +19,7 @@
   "files": [
     "bin/",
     "src/",
+    "skills/",
     "scripts/",
     "docs/",
     "README.md",
@@ -28,7 +29,7 @@
   "main": "src/index.js",
   "type": "commonjs",
   "scripts": {
-    "postinstall": "node scripts/patch-onnxruntime.js",
+    "postinstall": "node scripts/install-skills.js && node scripts/patch-onnxruntime.js",
     "start": "node bin/shmakk.js",
     "dev": "node bin/shmakk.js --debug",
     "test": "node test/units.js",
@@ -53,6 +54,8 @@
   },
   "optionalDependencies": {
     "@huggingface/transformers": "^4.2.0",
-    "kokoro-js": "^1.2.1"
+    "better-sqlite3": "^11.0.0",
+    "kokoro-js": "^1.2.1",
+    "playwright": "^1.40.0"
   }
 }

@@ -307,4 +307,57 @@ function showPlan() {
   }
 }
 
-module.exports = { status, exitParent, restartParent, resetConversation, setProfileAndRestart, profileSignalPath, resumeStatus, compactContext, stats, loadSkill, listSkills, skillStatus, unloadSkill, installSkill, showPlan };
+function mcpStatus() {
+  const fs = require('fs');
+  const path = require('path');
+  const os = require('os');
+
+  const globalPath = path.join(os.homedir(), '.config', 'shmakk', 'mcp.json');
+  const workspacePath = path.join(process.cwd(), '.shmakk', 'mcp.json');
+  let globalConfig = null;
+  let workspaceConfig = null;
+
+  try {
+    if (fs.existsSync(globalPath)) globalConfig = JSON.parse(fs.readFileSync(globalPath, 'utf8'));
+  } catch {}
+  try {
+    if (fs.existsSync(workspacePath)) workspaceConfig = JSON.parse(fs.readFileSync(workspacePath, 'utf8'));
+  } catch {}
+
+  const globalServers = globalConfig?.mcpServers || {};
+  const workspaceServers = workspaceConfig?.mcpServers || {};
+  const merged = { ...globalServers, ...workspaceServers };
+  const names = Object.keys(merged);
+
+  process.stdout.write('shmakk MCP status\n');
+  process.stdout.write('─────────────────\n');
+  process.stdout.write(`config (global):    ${fs.existsSync(globalPath) ? globalPath : 'not found'}\n`);
+  process.stdout.write(`config (workspace): ${fs.existsSync(workspacePath) ? workspacePath : 'not found'}\n`);
+  process.stdout.write(`servers configured: ${names.length}\n`);
+
+  if (!names.length) {
+    process.stdout.write('\nNo MCP servers configured.\n');
+    process.stdout.write(`Create ${globalPath} with:\n`);
+    process.stdout.write('  { "mcpServers": { "name": { "command": "...", "args": [...] } } }\n');
+    return 0;
+  }
+
+  process.stdout.write('\n');
+  for (const name of names) {
+    const cfg = merged[name];
+    const disabled = cfg.disabled ? ' [disabled]' : '';
+    const source = workspaceServers[name] ? 'workspace' : 'global';
+    process.stdout.write(`  ${name}${disabled} (${source})\n`);
+    process.stdout.write(`    command: ${cfg.command} ${(cfg.args || []).join(' ')}\n`);
+    if (cfg.safety) process.stdout.write(`    safety:  ${cfg.safety}\n`);
+    if (cfg.safeTools?.length) process.stdout.write(`    safe:    ${cfg.safeTools.join(', ')}\n`);
+    if (cfg.env && Object.keys(cfg.env).length) {
+      process.stdout.write(`    env:     ${Object.keys(cfg.env).join(', ')}\n`);
+    }
+  }
+
+  process.stdout.write('\nNote: tool counts are only available during an active shmakk session.\n');
+  return 0;
+}
+
+module.exports = { status, exitParent, restartParent, resetConversation, setProfileAndRestart, profileSignalPath, resumeStatus, compactContext, stats, loadSkill, listSkills, skillStatus, unloadSkill, installSkill, showPlan, mcpStatus };

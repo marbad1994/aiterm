@@ -21,6 +21,7 @@ function parseArgs(argv) {
     globalSkills: false,
     resumeStatus: false,
     showPlan: false,
+    mcpStatus: false,
     exitNow: false,
     restart: false,
     profile: null,
@@ -67,6 +68,7 @@ function parseArgs(argv) {
       case '--install-skill': opts.installSkill = argv[++i] || null; break;
       case '--resume-status': opts.resumeStatus = true; break;
       case '--show-plan': opts.showPlan = true; break;
+      case '--mcp-status': opts.mcpStatus = true; break;
       case '--exit': opts.exitNow = true; break;
       case '--restart': opts.restart = true; break;
       case '--reset': opts.reset = true; break;
@@ -126,6 +128,7 @@ Control (run from inside an shmakk session):
   shmakk --skill-status           Show active skill and registry status (workspace + global)
   shmakk --unload-skill <name>    Remove skill from whichever registry has it
   shmakk --show-plan              Show current plan status (tasks and progress)
+  shmakk --mcp-status             Show configured MCP servers and their tools
   shmakk --resume-status          Show task journal summary for resume continuity
   shmakk --exit                   Cleanly exit the parent shmakk
   shmakk --restart                Restart the inner shell (preserves window)
@@ -156,6 +159,16 @@ Speech-to-Text / Text-to-Speech (VAD-based, no hotkeys):
   --voice-pad-start-sec <sec>     Padding added to start of recording (default: 0.3)
   --tts-voice <name>              Override rotated voice schedule (default: af_heart)
   --completion <bash|zsh|fish>    Output shell tab-completion script
+
+Browser Automation:
+  The agent has a built-in browser tool (navigate, click, type, read_page,
+  screenshot, evaluate, select, wait, scroll, close). Requires playwright:
+    npm install playwright && npx playwright install chromium
+
+MCP (Model Context Protocol):
+  shmakk --mcp-status             Show configured MCP servers and their tools
+  Configure in ~/.config/shmakk/mcp.json or .shmakk/mcp.json:
+    { "mcpServers": { "name": { "command": "...", "args": [...] } } }
 
   Voice uses Whisper-base ONNX in-process. No Python, no server, no API key.
   Model auto-downloads on first use.

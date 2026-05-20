@@ -1,0 +1,679 @@
+// Self-command detection — lets users type natural language like "list skills"
+// instead of "shmakk --list-skills". Intercepted before the correction engine
+// so it never hits the LLM.
+//
+// Each entry has:
+//   patterns  — array of RegExp to match against input
+//   action    — string key used by executeSelfCommand()
+//   needsArg  — if true, the first capture group is passed as the arg
+//   confirm   — if true, ask the user before executing (destructive commands)
+//
+// executeSelfCommand(match, write, ctx) accepts an optional ctx object:
+//   ctx.opts      — mutable session opts (review, colors, debug, etc.)
+//   ctx.HELP      — help text string from cli.js
+//   ctx.setColors — fn(bool) to update the session color closure variable
+
+const SELF_COMMANDS = [
+  // ── Help ──
+  {
+    patterns: [
+      /^(?:show\s+)?help$/i,
+      /^what\s+can\s+(?:you|shmakk)\s+do[\s?]*$/i,
+      /^how\s+does\s+(?:this|shmakk)\s+work[\s?]*$/i,
+      /^(?:list\s+)?commands[\s?]*$/i,
+      /^shmakk\s+help$/i,
+    ],
+    action: 'show-help',
+  },
+
+  // ── Skills ──
+  {
+    patterns: [/^(?:list|show|my)\s+skills?$/i, /^what\s+skills?\s+(?:do\s+I\s+have|are\s+(?:loaded|available|there))[\s?]*$/i, /^skills?$/i],
+    action: 'list-skills',
+  },
+  {
+    patterns: [/^skill\s+status$/i],
+    action: 'skill-status',
+  },
+  {
+    patterns: [/^load\s+skill\s+(\S+)$/i],
+    action: 'load-skill',
+    needsArg: true,
+  },
+  {
+    patterns: [/^unload\s+skill\s+(\S+)$/i],
+    action: 'unload-skill',
+    needsArg: true,
+  },
+
+  // ── Plan ──
+  {
+    patterns: [/^(?:show|current|view)\s+plan$/i, /^plan\s+(?:status|progress)$/i, /^plan$/i],
+    action: 'show-plan',
+  },
+
+  // ── Session ──
+  {
+    patterns: [/^(?:shmakk\s+)?status$/i],
+    action: 'status',
+  },
+  {
+    patterns: [/^(?:show\s+)?stats$/i, /^session\s+stats$/i],
+    action: 'stats',
+  },
+  {
+    patterns: [/^resume\s+status$/i],
+    action: 'resume-status',
+  },
+  {
+    patterns: [/^(?:show|print|current)\s+config$/i, /^what(?:'s|\s+is)\s+(?:my\s+)?config[\s?]*$/i],
+    action: 'print-config',
+  },
+
+  // ── MCP ──
+  {
+    patterns: [/^mcp\s+(?:status|servers?)$/i, /^(?:show\s+)?mcp$/i],
+    action: 'mcp-status',
+  },
+
+  // ── Rules ──
+  {
+    patterns: [
+      /^(?:show|list|view|my)\s+rules?$/i,
+      /^rules?\s+(?:status|info)$/i,
+      /^rules?$/i,
+      /^what\s+(?:are\s+)?(?:my\s+)?rules?[\s?]*$/i,
+    ],
+    action: 'show-rules',
+  },
+
+  // ── Recall / session search (FTS5) ──
+  {
+    patterns: [
+      /^recall\s+(.+)$/i,
+      /^remember\s+when\s+(.+)$/i,
+    ],
+    action: 'recall',
+    needsArg: true,
+  },
+  {
+    patterns: [
+      /^find\s+session(?:s)?\s+(.+)$/i,
+      /^search\s+sessions?\s+(.+)$/i,
+      /^search\s+history\s+(.+)$/i,
+    ],
+    action: 'find-session',
+    needsArg: true,
+  },
+  {
+    patterns: [
+      /^(?:show\s+)?last\s+sessions?$/i,
+      /^recent\s+sessions?$/i,
+    ],
+    action: 'last-sessions',
+  },
+  {
+    patterns: [
+      /^search\s+(?:db|database)\s+(?:status|info|stats)$/i,
+      /^session\s+(?:db|database|search)\s+(?:status|stats)$/i,
+    ],
+    action: 'search-db-status',
+  },
+
+  // ── Memory ──
+  {
+    patterns: [
+      /^(?:show|view|list|my)\s+memor(?:y|ies)$/i,
+      /^memor(?:y|ies)\s+(?:status|info)$/i,
+      /^memor(?:y|ies)$/i,
+      /^what\s+(?:do\s+)?(?:i|you)\s+remember[\s?]*$/i,
+    ],
+    action: 'show-memory',
+  },
+  {
+    patterns: [/^forget\s+(.+)$/i],
+    action: 'forget-memory',
+    needsArg: true,
+    confirm: true,
+  },
+
+  // ── Workflows ──
+  {
+    patterns: [
+      /^(?:list|show|view)\s+workflows?$/i,
+      /^workflows?$/i,
+      /^what\s+workflows?\s+(?:are\s+)?(?:available|there)[\s?]*$/i,
+    ],
+    action: 'list-workflows',
+  },
+  {
+    patterns: [/^run\s+workflow\s+(\S+)$/i, /^workflow\s+(\S+)$/i],
+    action: 'run-workflow',
+    needsArg: true,
+  },
+
+  // ── Agents / specialists ──
+  {
+    patterns: [
+      /^(?:list|show|view)\s+(?:agents?|specialists?|roles?)$/i,
+      /^(?:agents?|specialists?)$/i,
+      /^who\s+(?:can\s+)?(?:help|do\s+the\s+work)[\s?]*$/i,
+    ],
+    action: 'list-agents',
+  },
+
+  // ── Set model ──
+  {
+    patterns: [
+      /^set\s+model\s+to\s+(\S+)$/i,
+      /^use\s+model\s+(\S+)$/i,
+      /^change\s+model\s+to\s+(\S+)$/i,
+      /^model\s+(\S+)$/i,
+    ],
+    action: 'set-model',
+    needsArg: true,
+  },
+
+  // ── Set base URL ──
+  {
+    patterns: [
+      /^set\s+(?:base\s+)?url\s+to\s+(\S+)$/i,
+      /^use\s+api\s+at\s+(\S+)$/i,
+      /^set\s+(?:api\s+)?endpoint\s+to\s+(\S+)$/i,
+      /^point\s+(?:to|at)\s+(\S+)$/i,
+    ],
+    action: 'set-base-url',
+    needsArg: true,
+  },
+
+  // ── Set API key ──
+  {
+    patterns: [
+      /^set\s+api\s+key\s+to\s+(\S+)$/i,
+      /^use\s+api\s+key\s+(\S+)$/i,
+    ],
+    action: 'set-api-key',
+    needsArg: true,
+  },
+
+  // ── Review mode ──
+  {
+    patterns: [
+      /^(?:enable|turn\s+on|start|use)\s+review(?:\s+mode)?$/i,
+      /^review(?:\s+mode)?\s+on$/i,
+    ],
+    action: 'enable-review',
+  },
+  {
+    patterns: [
+      /^(?:disable|turn\s+off|stop)\s+review(?:\s+mode)?$/i,
+      /^review(?:\s+mode)?\s+off$/i,
+      /^auto(?:\s+mode)?$/i,
+    ],
+    action: 'disable-review',
+  },
+
+  // ── Correction ──
+  {
+    patterns: [
+      /^(?:enable|turn\s+on)\s+correction$/i,
+      /^correction\s+on$/i,
+    ],
+    action: 'enable-correction',
+  },
+  {
+    patterns: [
+      /^(?:disable|turn\s+off|no)\s+correction$/i,
+      /^correction\s+off$/i,
+    ],
+    action: 'disable-correction',
+  },
+
+  // ── Yes-files ──
+  {
+    patterns: [
+      /^(?:enable|turn\s+on)\s+yes[\s-]files?$/i,
+      /^yes[\s-]files?\s+on$/i,
+      /^auto[\s-]?accept\s+files?$/i,
+    ],
+    action: 'enable-yes-files',
+  },
+  {
+    patterns: [
+      /^(?:disable|turn\s+off)\s+yes[\s-]files?$/i,
+      /^yes[\s-]files?\s+off$/i,
+    ],
+    action: 'disable-yes-files',
+  },
+
+  // ── Colors ──
+  {
+    patterns: [
+      /^(?:enable|turn\s+on)\s+colou?rs?$/i,
+      /^colou?rs?\s+on$/i,
+    ],
+    action: 'enable-colors',
+  },
+  {
+    patterns: [
+      /^(?:disable|turn\s+off|no)\s+colou?rs?$/i,
+      /^colou?rs?\s+off$/i,
+    ],
+    action: 'disable-colors',
+  },
+
+  // ── Debug ──
+  {
+    patterns: [
+      /^(?:enable|turn\s+on)\s+debug(?:\s+mode)?$/i,
+      /^debug(?:\s+mode)?\s+on$/i,
+    ],
+    action: 'enable-debug',
+  },
+  {
+    patterns: [
+      /^(?:disable|turn\s+off|no)\s+debug(?:\s+mode)?$/i,
+      /^debug(?:\s+mode)?\s+off$/i,
+    ],
+    action: 'disable-debug',
+  },
+
+  // ── Profile ──
+  {
+    patterns: [
+      /^(?:set\s+profile\s+to|use\s+profile|switch\s+profile\s+to)\s+(\S+)$/i,
+      /^profile\s+(tiny|balanced|deep|builder|large-app)$/i,
+    ],
+    action: 'set-profile',
+    needsArg: true,
+    confirm: true,
+  },
+
+  // ── Destructive (need confirmation) ──
+  {
+    patterns: [/^compact(?:\s+context)?$/i, /^clear\s+context$/i],
+    action: 'compact',
+    confirm: true,
+  },
+  {
+    patterns: [/^reset(?:\s+conversation)?$/i],
+    action: 'reset',
+    confirm: true,
+  },
+
+  // ── Edit review ──
+  {
+    patterns: [
+      /^(?:go\s+through|review|show|view)\s+(?:the\s+)?(?:edits?|changes?|diffs?)$/i,
+      /^(?:show|view)\s+(?:the\s+)?diffs?$/i,
+      /^edits?$/i,
+    ],
+    action: 'review-edits',
+  },
+];
+
+function matchSelfCommand(input) {
+  const text = String(input || '').trim();
+  if (!text) return { matched: false };
+
+  for (const entry of SELF_COMMANDS) {
+    for (const pattern of entry.patterns) {
+      const m = pattern.exec(text);
+      if (m) {
+        return {
+          matched: true,
+          action: entry.action,
+          arg: entry.needsArg && m[1] ? m[1].trim() : null,
+          confirm: !!entry.confirm,
+        };
+      }
+    }
+  }
+
+  return { matched: false };
+}
+
+// ctx is optional: { opts, HELP, setColors }
+function executeSelfCommand(match, write, ctx = {}) {
+  const ctl = require('./control');
+  const opts = ctx.opts || {};
+
+  switch (match.action) {
+
+    // ── Help ──
+    case 'show-help': {
+      const helpText = ctx.HELP || '[shmakk] help text not available';
+      write(helpText.replace(/\n/g, '\r\n'));
+      break;
+    }
+
+    // ── Skills ──
+    case 'list-skills':   ctl.listSkills(); break;
+    case 'skill-status':  ctl.skillStatus(); break;
+    case 'load-skill':    ctl.loadSkill(match.arg); break;
+    case 'unload-skill':  ctl.unloadSkill(match.arg); break;
+
+    // ── Plan ──
+    case 'show-plan':     ctl.showPlan(); break;
+
+    // ── Session ──
+    case 'status':        ctl.status(); break;
+    case 'stats':         ctl.stats(); break;
+    case 'resume-status': ctl.resumeStatus(); break;
+    case 'mcp-status':    ctl.mcpStatus(); break;
+    case 'compact':       ctl.compactContext(); break;
+    case 'reset':         ctl.resetConversation(); break;
+
+    case 'show-rules': {
+      const { loadRules, rulesStatus } = require('./rules');
+      const status = rulesStatus();
+      write(`\x1b[36m[shmakk] rule files:\x1b[0m\r\n`);
+      write(`  global:    ${status.globalPath} ${status.globalExists ? `(${status.globalBytes} bytes)` : '\x1b[2m(missing)\x1b[0m'}\r\n`);
+      write(`  workspace: ${status.workspacePath} ${status.workspaceExists ? `(${status.workspaceBytes} bytes)` : '\x1b[2m(not set)\x1b[0m'}\r\n`);
+      const rules = loadRules();
+      if (!rules) {
+        write(`\r\n\x1b[2m[shmakk] no rules loaded. Create ${status.globalPath} or .shmakk/rules.md in your workspace.\x1b[0m\r\n`);
+      } else {
+        write(`\r\n${rules.replace(/\n/g, '\r\n')}\r\n`);
+      }
+      break;
+    }
+
+    case 'recall': {
+      const sessionSearch = require('./session-search');
+      if (!sessionSearch.isAvailable()) {
+        write('\x1b[33m[shmakk] cross-session search unavailable — install with: npm install better-sqlite3\x1b[0m\r\n');
+        break;
+      }
+      const hits = sessionSearch.searchTurns(match.arg, { limit: 10 });
+      if (!hits.length) {
+        write(`\x1b[33m[shmakk] no matches for "${match.arg}"\x1b[0m\r\n`);
+        break;
+      }
+      const grouped = sessionSearch.expandHits(hits);
+      write(`\x1b[36m[shmakk] found ${hits.length} hits across ${grouped.length} sessions:\x1b[0m\r\n\r\n`);
+      for (const g of grouped.slice(0, 5)) {
+        const date = new Date(g.startedAt).toLocaleString();
+        write(`\x1b[1m${g.sessionId}\x1b[0m  \x1b[2m${date} · ${g.workspace || 'unknown workspace'}\x1b[0m\r\n`);
+        for (const h of g.hits.slice(0, 3)) {
+          // Strip bracket markers from snippet and re-add ANSI underline
+          const snip = String(h.snippet || '').replace(/\[(.*?)\]/g, '\x1b[4m$1\x1b[24m');
+          write(`  \x1b[2m${h.role}:\x1b[0m ${snip}\r\n`);
+        }
+        write('\r\n');
+      }
+      if (grouped.length > 5) write(`\x1b[2m... and ${grouped.length - 5} more sessions. Use "find session ${match.arg}" for the full list.\x1b[0m\r\n`);
+      break;
+    }
+
+    case 'find-session': {
+      const sessionSearch = require('./session-search');
+      if (!sessionSearch.isAvailable()) {
+        write('\x1b[33m[shmakk] cross-session search unavailable — install with: npm install better-sqlite3\x1b[0m\r\n');
+        break;
+      }
+      const hits = sessionSearch.searchTurns(match.arg, { limit: 50 });
+      if (!hits.length) {
+        write(`\x1b[33m[shmakk] no matches for "${match.arg}"\x1b[0m\r\n`);
+        break;
+      }
+      const grouped = sessionSearch.expandHits(hits, 0);
+      write(`\x1b[36m[shmakk] ${grouped.length} session${grouped.length === 1 ? '' : 's'} match "${match.arg}":\x1b[0m\r\n\r\n`);
+      for (const g of grouped) {
+        const date = new Date(g.startedAt).toLocaleString();
+        write(`  \x1b[1m${g.sessionId}\x1b[0m  \x1b[2m${date}  · ${g.hits.length} hit${g.hits.length === 1 ? '' : 's'}\x1b[0m\r\n`);
+        write(`  \x1b[2m  ${g.workspace || 'unknown workspace'}\x1b[0m\r\n`);
+      }
+      break;
+    }
+
+    case 'last-sessions': {
+      const sessionSearch = require('./session-search');
+      if (!sessionSearch.isAvailable()) {
+        write('\x1b[33m[shmakk] cross-session search unavailable — install with: npm install better-sqlite3\x1b[0m\r\n');
+        break;
+      }
+      const sessions = sessionSearch.listSessions({ limit: 10 });
+      if (!sessions.length) {
+        write('\x1b[2m[shmakk] no recorded sessions yet\x1b[0m\r\n');
+        break;
+      }
+      write(`\x1b[36m[shmakk] recent sessions:\x1b[0m\r\n\r\n`);
+      for (const s of sessions) {
+        const started = new Date(s.started_at).toLocaleString();
+        const dur = s.ended_at ? `${Math.round((s.ended_at - s.started_at) / 1000)}s` : '\x1b[33mactive\x1b[0m';
+        write(`  \x1b[1m${s.id}\x1b[0m  \x1b[2m${started}  · ${s.turn_count} turns · ${dur}\x1b[0m\r\n`);
+        write(`  \x1b[2m  ${s.workspace || 'unknown'}\x1b[0m\r\n`);
+      }
+      break;
+    }
+
+    case 'search-db-status': {
+      const sessionSearch = require('./session-search');
+      const stats = sessionSearch.dbStats();
+      if (!stats.available) {
+        write('\x1b[33m[shmakk] session search DB unavailable\x1b[0m\r\n');
+        if (stats.error) write(`  reason: ${stats.error}\r\n`);
+        write('  install with: \x1b[1mnpm install better-sqlite3\x1b[0m\r\n');
+        break;
+      }
+      write('\x1b[36m[shmakk] session search DB:\x1b[0m\r\n');
+      write(`  path:     ${stats.path}\r\n`);
+      write(`  sessions: ${stats.sessions}\r\n`);
+      write(`  turns:    ${stats.turns}\r\n`);
+      write(`  files:    ${stats.files}\r\n`);
+      if (stats.oldest) write(`  oldest:   ${new Date(stats.oldest).toLocaleString()}\r\n`);
+      if (stats.newest) write(`  newest:   ${new Date(stats.newest).toLocaleString()}\r\n`);
+      break;
+    }
+
+    case 'show-memory': {
+      const { loadMemory, memoryStatus } = require('./memory');
+      const status = memoryStatus();
+      write(`\x1b[36m[shmakk] memory files:\x1b[0m\r\n`);
+      write(`  global:    ${status.globalPath} ${status.globalExists ? `(${status.globalBytes} bytes)` : '\x1b[2m(empty)\x1b[0m'}\r\n`);
+      write(`  workspace: ${status.workspacePath} ${status.workspaceExists ? `(${status.workspaceBytes} bytes)` : '\x1b[2m(empty)\x1b[0m'}\r\n`);
+      const mem = loadMemory();
+      if (!mem) {
+        write(`\r\n\x1b[2m[shmakk] memory is empty. The agent will write facts here via the "remember" tool as it discovers them.\x1b[0m\r\n`);
+      } else {
+        write(`\r\n${mem.replace(/\n/g, '\r\n')}\r\n`);
+      }
+      break;
+    }
+
+    case 'forget-memory': {
+      const { forgetMemory } = require('./memory');
+      const r = forgetMemory(match.arg);
+      if (r.removed === 0) {
+        write(`\x1b[33m[shmakk] no memory entries matched "${match.arg}"\x1b[0m\r\n`);
+      } else {
+        write(`\x1b[32m[shmakk] forgot ${r.removed} memory entr${r.removed === 1 ? 'y' : 'ies'} matching "${match.arg}"\x1b[0m\r\n`);
+      }
+      break;
+    }
+
+    case 'list-workflows': {
+      const { listWorkflows } = require('./workflows');
+      const all = listWorkflows();
+      write(`\x1b[36m[shmakk] available workflows (${all.length}):\x1b[0m\r\n\r\n`);
+      for (const w of all) {
+        write(`  \x1b[1m${w.id.padEnd(22)}\x1b[0m \x1b[2m(${w.topology}, ${w.steps} steps)\x1b[0m\r\n`);
+        write(`  \x1b[2m${w.description}\x1b[0m\r\n\r\n`);
+      }
+      write(`\x1b[2mRun one with: "run workflow <name>" or describe your task and the PM will auto-match.\x1b[0m\r\n`);
+      break;
+    }
+
+    case 'run-workflow': {
+      const { getWorkflow } = require('./workflows');
+      const wf = getWorkflow(match.arg);
+      if (!wf) {
+        write(`\x1b[31m[shmakk] no workflow named "${match.arg}"\x1b[0m\r\n`);
+        write(`\x1b[2mUse "list workflows" to see available templates.\x1b[0m\r\n`);
+        break;
+      }
+      write(`\x1b[36m[shmakk] workflow "${wf.id}" defined:\x1b[0m\r\n\r\n`);
+      write(`  topology: ${wf.topology}\r\n`);
+      write(`  steps:    ${wf.steps.length}\r\n\r\n`);
+      for (let i = 0; i < wf.steps.length; i++) {
+        const s = wf.steps[i];
+        write(`  ${i + 1}. \x1b[36m${s.role.padEnd(10)}\x1b[0m ${s.task.replace(/\{input\}/g, '<your task description>')}\r\n`);
+      }
+      write(`\r\n\x1b[2mTo execute: describe what you want the workflow to do and the PM will run it automatically.\x1b[0m\r\n`);
+      write(`\x1b[2mExample: "${wf.triggers && wf.triggers[0] ? wf.triggers[0].source.replace(/\\b|\(|\)|\?|\|/g, '').slice(0, 40) : wf.id.replace(/-/g, ' ')}"\x1b[0m\r\n`);
+      break;
+    }
+
+    case 'list-agents': {
+      const { AGENT_ROSTER } = require('./team');
+      const roles = Object.keys(AGENT_ROSTER);
+      write(`\x1b[36m[shmakk] agent roster (${roles.length} specialists):\x1b[0m\r\n\r\n`);
+      for (const role of roles) {
+        const spec = AGENT_ROSTER[role];
+        const firstLine = spec.hint.trim().split('\n').find((l) => l.startsWith('Specialist:')) || `Specialist: ${role}`;
+        write(`  \x1b[1m${role.padEnd(10)}\x1b[0m \x1b[2m[${spec.profile}]\x1b[0m  ${firstLine.replace(/^Specialist:\s*/, '')}\r\n`);
+      }
+      write(`\r\n\x1b[2mThe PM picks from these automatically. Use "list workflows" to see pre-built templates.\x1b[0m\r\n`);
+      break;
+    }
+
+    case 'print-config': {
+      const cfg = {
+        workspace: process.cwd(),
+        shell: process.env.SHELL,
+        baseUrl: process.env.SHMAKK_BASE_URL || null,
+        model: process.env.SHMAKK_MODEL || null,
+        review: opts.review || false,
+        colors: opts.colors !== false,
+        noCorrection: opts.noCorrection || false,
+        yesFiles: opts.yesFiles || false,
+        debug: opts.debug || false,
+        profile: opts.profile || null,
+      };
+      write(JSON.stringify(cfg, null, 2).replace(/\n/g, '\r\n') + '\r\n');
+      break;
+    }
+
+    // ── Set model ──
+    case 'set-model': {
+      const model = match.arg;
+      process.env.SHMAKK_MODEL = model;
+      write(`[shmakk] model → ${model}\r\n`);
+      write('[shmakk] takes effect on the next agent invocation\r\n');
+      break;
+    }
+
+    // ── Set base URL ──
+    case 'set-base-url': {
+      const url = match.arg;
+      process.env.SHMAKK_BASE_URL = url;
+      write(`[shmakk] base URL → ${url}\r\n`);
+      write('[shmakk] takes effect on the next agent invocation\r\n');
+      break;
+    }
+
+    // ── Set API key ──
+    case 'set-api-key': {
+      const key = match.arg;
+      process.env.SHMAKK_API_KEY = key;
+      const masked = key.slice(0, 8) + '...' + key.slice(-4);
+      write(`[shmakk] API key → ${masked}\r\n`);
+      write('[shmakk] takes effect on the next agent invocation\r\n');
+      break;
+    }
+
+    // ── Review mode ──
+    case 'enable-review': {
+      if (ctx.opts) ctx.opts.review = true;
+      write('[shmakk] review mode on — every AI action requires confirmation\r\n');
+      break;
+    }
+    case 'disable-review': {
+      if (ctx.opts) ctx.opts.review = false;
+      write('[shmakk] auto mode on — safe actions run without confirmation\r\n');
+      break;
+    }
+
+    // ── Correction ──
+    case 'enable-correction': {
+      if (ctx.opts) ctx.opts.noCorrection = false;
+      write('[shmakk] command correction enabled\r\n');
+      break;
+    }
+    case 'disable-correction': {
+      if (ctx.opts) ctx.opts.noCorrection = true;
+      write('[shmakk] command correction disabled\r\n');
+      break;
+    }
+
+    // ── Yes-files ──
+    case 'enable-yes-files': {
+      if (ctx.opts) ctx.opts.yesFiles = true;
+      write('[shmakk] yes-files on — write_file, edit_file, make_dir auto-accepted\r\n');
+      break;
+    }
+    case 'disable-yes-files': {
+      if (ctx.opts) ctx.opts.yesFiles = false;
+      write('[shmakk] yes-files off — file writes will prompt for confirmation\r\n');
+      break;
+    }
+
+    // ── Colors ──
+    case 'enable-colors': {
+      if (ctx.opts) ctx.opts.colors = true;
+      if (ctx.setColors) ctx.setColors(true);
+      write('[shmakk] colors enabled\r\n');
+      break;
+    }
+    case 'disable-colors': {
+      if (ctx.opts) ctx.opts.colors = false;
+      if (ctx.setColors) ctx.setColors(false);
+      write('[shmakk] colors disabled\r\n');
+      break;
+    }
+
+    // ── Debug ──
+    case 'enable-debug': {
+      if (ctx.opts) ctx.opts.debug = true;
+      write('[shmakk] debug mode on\r\n');
+      break;
+    }
+    case 'disable-debug': {
+      if (ctx.opts) ctx.opts.debug = false;
+      write('[shmakk] debug mode off\r\n');
+      break;
+    }
+
+    // ── Profile ──
+    case 'set-profile': {
+      const validProfiles = ['tiny', 'balanced', 'deep', 'builder', 'large-app'];
+      const p = (match.arg || '').toLowerCase();
+      if (!validProfiles.includes(p)) {
+        write(`[shmakk] unknown profile: ${match.arg}\r\n`);
+        write(`[shmakk] valid profiles: ${validProfiles.join(', ')}\r\n`);
+        break;
+      }
+      write(`[shmakk] switching to profile '${p}' — restarting inner shell…\r\n`);
+      ctl.setProfileAndRestart(p);
+      break;
+    }
+
+    // ── Edit review ──
+    case 'review-edits': {
+      const { hasEdits } = require('./edit-tracker');
+      if (!hasEdits()) {
+        write('[shmakk] no edits to review this session\r\n');
+      } else {
+        const { openEditViewer } = require('./edit-viewer');
+        openEditViewer(write);
+      }
+      break;
+    }
+
+    default:
+      write(`[shmakk] unknown self-command: ${match.action}\r\n`);
+  }
+}
+
+module.exports = { matchSelfCommand, executeSelfCommand, SELF_COMMANDS };

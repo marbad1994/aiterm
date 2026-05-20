@@ -14,34 +14,49 @@ const fs = require('fs');
 const path = require('path');
 const { makeClient, modelFor } = require('./llm');
 
-// Inputs that look like complex multi-step work. Short inputs and simple
-// one-word commands skip planning even if they contain one of these words.
-const PLAN_TRIGGERS = [
-  /\brefactor\b/i,
-  /\bmigrat(e|ion)\b/i,
-  /\bset\s+up\b/i,
-  /\bimplement\b/i,
-  /\bredesign\b/i,
-  /\brewrite\b/i,
-  /\breorganize\b/i,
-  /\boverhaul\b/i,
-  /\bconvert\s+\w+\s+to\b/i,
-  /\bupdate\s+all\b/i,
-  /\badd\s+(a\s+)?(new\s+)?(feature|system|module|service|component)\b/i,
-  /\bbuild\s+(a\s+)?(new\s+)?(system|service|module|feature|app)\b/i,
-  /\bcreate\s+(a\s+)?(new\s+)?(system|service|module|app|pipeline)\b/i,
-  /\bclean\s+up\s+the\b/i,
-  /\baudit\s+\w+/i,
-  /\bintegrate\b/i,
+// Questions and conversational inputs that should bypass planning.
+// These get direct answers from the agent without plan overhead.
+const SKIP_PLAN = [
+  // Wh-questions: "what does X do", "how does Y work"
+  /^(?:what|how|why|when|where|who|which)\s+(?:is|are|does|do|did|was|were|can|could|should|would|will)\b/i,
+  // Ends with question mark (most natural questions)
+  /\?$/,
+  // Explanation requests without action
+  /^(?:explain|describe|tell\s+me\s+(?:about|what|how)|show\s+me\s+(?:what|how)|what\s+is\s+(?:a\s+)?|what\s+are\s+|how\s+does\s+|how\s+do\s+)/i,
+  // Conversational acknowledgements
+  /^(?:yes|no|ok|okay|sure|thanks|thank\s+you|got\s+it|sounds\s+good|alright|great|perfect|cool|nice|agreed)\b/i,
+  // Very short (one-liners under 30 chars almost never need a plan)
 ];
 
-// shouldPlan returns true for complex multi-step requests.
+// Action verbs that signal implementation work — these get a plan.
+const PLAN_SIGNALS = [
+  /\b(?:add|create|build|implement|write|develop|generate)\b/i,
+  /\b(?:fix|debug|resolve|solve|repair|patch|correct|handle)\b/i,
+  /\b(?:refactor|rewrite|migrate|convert|update|upgrade|replace|rename|move)\b/i,
+  /\b(?:set\s+up|configure|install|integrate|deploy|connect|wire\s+up|hook\s+up)\b/i,
+  /\b(?:remove|delete|clean(?:\s+up)?|purge|strip|drop)\b/i,
+  /\b(?:test|spec|cover|mock|stub|end.to.end)\b/i,
+  /\b(?:document|comment|annotate|readme)\b/i,
+  /\b(?:make|change|modify|edit|adjust|tweak)\b/i,
+  /\b(?:optimize|improve|enhance|speed\s+up|reduce|minimize)\b/i,
+  /\b(?:extract|split|merge|combine|consolidate|reorganize|restructure)\b/i,
+  /\b(?:audit|review|inspect|analyse|analyze|scan)\b/i,
+  /\b(?:enable|disable|toggle|switch|turn\s+on|turn\s+off)\b/i,
+];
+
+// shouldPlan returns true for any implementation/action task.
 // Prefix input with '!' to bypass planning for any request.
 function shouldPlan(input) {
   const text = String(input || '').trim();
-  if (text.startsWith('!')) return false; // explicit bypass
-  if (text.length < 60) return false;     // one-liners skip planning
-  return PLAN_TRIGGERS.some((p) => p.test(text));
+  if (text.startsWith('!')) return false;          // explicit bypass
+  if (text.length < 30) return false;              // definitely too short
+  if (SKIP_PLAN.some((p) => p.test(text))) return false;  // question/conversational
+
+  // Anything with an action signal gets a plan
+  if (PLAN_SIGNALS.some((p) => p.test(text))) return true;
+
+  // Long inputs that don't match skip patterns almost always need a plan
+  return text.length >= 80;
 }
 
 // generatePlan calls the LLM to decompose the user's request into a plan.

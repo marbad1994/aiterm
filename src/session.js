@@ -12,6 +12,14 @@ const { loadGlossary } = require('./glossary');
 const { isConfigured } = require('./llm');
 const { makePrompter, decisionBanner } = require('./review');
 const { workspaceWarning } = require('./safety');
+const { createMCPManager } = require('./mcp-client');
+const { clearEdits } = require('./edit-tracker');
+const { matchSelfCommand, executeSelfCommand } = require('./self-commands');
+const { runTeam, looksMultiDomain } = require('./team');
+const { addPlanTasks, markTaskComplete, markTaskSkipped } = require('./task-file');
+const { captureGitSha, runPostPlanReview } = require('./code-reviewer');
+const sessionSearch = require('./session-search');
+const { HELP } = require('./cli');
 const audit = require('./audit');
 const { setMaxListeners } = require('events');
 
@@ -54,6 +62,10 @@ function isAbortError(e) {
 
 function stripAnsi(s) {
   return String(s || '').replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+function dim(text, enabled) {
+  return enabled ? `\x1b[2m${text}\x1b[0m` : text;
 }
 
 function trimHistory(history) {
@@ -151,7 +163,7 @@ function makeToolConfirm(opts, ask, out, getAbort) {
 
 async function runOneSession(opts, registerSession) {
   const session = startSession({ debug: opts.debug, voiceEnabled: !!opts.voice });
-  const colorsEnabled = opts.colors !== false;
+  let colorsEnabled = opts.colors !== false;
   const out = (s) => session.stdoutWrite(colorsEnabled ? s : stripAnsi(s));
   const ask = makePrompter(session, out);
   const glossary = loadGlossary();
@@ -167,6 +179,13 @@ async function runOneSession(opts, registerSession) {
     return c === pinnedWorkspace ? [pinnedWorkspace] : [pinnedWorkspace, c];
   }
 
+  // ── MCP server setup ──
+  const mcpManager = createMCPManager();
+  const mcpCount = mcpManager.loadConfig(pinnedWorkspace || cwd);
+  if (mcpCount > 0) {
+    mcpManager.startAll((msg) => out(`\x1b[2m${msg}\x1b[0m\r\n`)).catch(() => {});
+  }
+
   const wsWarn = workspaceWarning(cwd);
   if (wsWarn) out(`\x1b[33m[shmakk] ${wsWarn}\x1b[0m\r\n`);
   if (!isConfigured()) {
@@ -174,7 +193,19 @@ async function runOneSession(opts, registerSession) {
   } else if (!glossary) {
     out('\x1b[33m[shmakk] tip: run `shmakk --update-command-glossary` for better corrections.\x1b[0m\r\n');
   }
-  audit.append({ kind: 'session-start', workspace: cwd, pinnedWorkspace, review: !!opts.review, pid: process.pid });
+  // Generate a session ID so all turns/files this session produces can be
+  // joined together in the search DB. Persists in env so subagents can tag.
+  const sessionId = sessionSearch.makeSessionId();
+  process.env.SHMAKK_SESSION_ID = sessionId;
+  audit.append({ kind: 'session-start', sessionId, workspace: cwd, pinnedWorkspace, review: !!opts.review, pid: process.pid });
+  sessionSearch.recordSessionStart({ sessionId, workspace: cwd, pid: process.pid });
+
+  // Incremental audit-log index catch-up — runs once at session start, async,
+  // never blocks the user. Pulls in any sessions/turns persisted by other
+  // shmakk instances since this DB was last opened.
+  setImmediate(() => {
+    try { sessionSearch.indexAuditLog(); } catch {}
+  });
 
   // ── Global Ctrl+C handler (persistent bottom-of-stack) ──
   // Ctrl+C = shut up. Kills TTS, recorder, and voice loop immediately.
@@ -313,6 +344,7 @@ async function runOneSession(opts, registerSession) {
     history = [];
     try { clearTaskJournal(currentRoots()[0]); } catch {}
     try { clearIndex(currentRoots()[0]); } catch {}
+    clearEdits();
     out('\r\n\x1b[33m[shmakk] conversation + task journal + workspace index cleared\x1b[0m\r\n');
   }
   registerSession(session, resetHistory);
@@ -324,6 +356,24 @@ async function runOneSession(opts, registerSession) {
   let voiceTaskRunning = false;
   async function runVoiceAsTask(text) {
     if (!text || voiceTaskRunning) return;
+
+    // Voice self-commands bypass the agent — say "list skills", "show rules",
+    // "review edits", etc. and they execute locally just like typed input.
+    const voiceSelfCmd = matchSelfCommand(text);
+    if (voiceSelfCmd.matched) {
+      audit.append({ kind: 'self-command', cmd: text, action: voiceSelfCmd.action, via: 'voice' });
+      if (voiceSelfCmd.confirm) {
+        const go = await ask(`Run ${voiceSelfCmd.action}?`, true, { onCancel: () => {} });
+        if (!go) return;
+      }
+      executeSelfCommand(voiceSelfCmd, out, {
+        opts,
+        HELP,
+        setColors: (v) => { colorsEnabled = v; },
+      });
+      return;
+    }
+
     if (!isConfigured()) {
       out('\r\n\x1b[33m[shmakk] LLM not configured — voice input ignored\x1b[0m\r\n');
       return;
@@ -344,6 +394,7 @@ async function runOneSession(opts, registerSession) {
             colors: colorsEnabled,
             voiceMode: true,
             specialistHint: voiceRouting.specialistHint,
+            mcpManager,
           });
           history = trimHistory(updated || history);
           if ((opts.tts || opts.sts) && updated && updated.length) {
@@ -557,9 +608,39 @@ async function runOneSession(opts, registerSession) {
     lastCommand = null;
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
 
-    // Determine the command to feed forward. Normally this is the failed
-    // command, but when a correction was applied and succeeded we use the
-    // user's original input so the agent handles their broader intent.
+    // ── Self-command detection (FIRST — before ANY other processing) ──
+    // Self-commands are pure local execution. They MUST bypass:
+    //   - the noAi early-return (they don't need an LLM)
+    //   - the correction engine (no shell correction makes sense for them)
+    //   - the agent pipeline (they have their own handlers)
+    // Check is performed against lastCmd, which is the actual command the
+    // shell tried to execute — including any correction that was applied.
+    if (lastCmd && code !== 0) {
+      const selfCmd = matchSelfCommand(lastCmd);
+      if (selfCmd.matched) {
+        discardPending();
+        audit.append({ kind: 'self-command', cmd: lastCmd, action: selfCmd.action, cwd });
+        // Clear any stale correction state so it doesn't leak into next command
+        correctionOrigin = null;
+        if (selfCmd.confirm) {
+          const go = await ask(`Run ${selfCmd.action}?`, true, { onCancel: () => {} });
+          if (!go) { session.childWrite('\r'); return; }
+        }
+        executeSelfCommand(selfCmd, out, {
+          opts,
+          HELP,
+          setColors: (v) => { colorsEnabled = v; },
+        });
+        session.childWrite('\r');
+        return;
+      }
+    }
+
+    // Determine the command to feed forward.
+    // - Succeeded (code 0): only continue if a correction was applied; give agent the original.
+    // - Failed  (code != 0): give agent the original command the user typed, not any
+    //   corrected variant — if a correction was applied but also failed, correctionOrigin
+    //   still holds the user's original input and that's what the agent should reason about.
     let cmd = lastCmd;
     if (code === 0) {
       if (correctionOrigin && !opts.noAi) {
@@ -569,9 +650,14 @@ async function runOneSession(opts, registerSession) {
         flushPending();
         return;
       }
-    } else if (opts.noAi) {
-      flushPending();
-      return;
+    } else {
+      if (opts.noAi) { flushPending(); return; }
+      // If a correction was applied but the corrected command also failed,
+      // restore the original so the agent sees what the user actually intended.
+      if (correctionOrigin) {
+        cmd = correctionOrigin;
+        correctionOrigin = null;
+      }
     }
 
     audit.append({ kind: 'failed-command', cmd, exit: code, cwd });
@@ -676,7 +762,32 @@ async function runOneSession(opts, registerSession) {
         profile: agentProfile,
         colors: colorsEnabled,
         specialistHint: routing.specialistHint,
+        mcpManager,
       };
+
+      // ── Team mode (multi-agent parallel execution) ──
+      // When the task spans multiple domains, the PM agent assembles a specialist
+      // team, runs them in parallel, and synthesizes results. Skips plan-first
+      // and single-agent if team handles it. Not active in review mode.
+      if (!opts.review && looksMultiDomain(cmd)) {
+        let teamHandled = false;
+        try {
+          teamHandled = await runTeam({
+            input: cmd,
+            roots: currentRoots(),
+            write: out,
+            signal: ctrl.signal,
+            mcpManager,
+          });
+        } catch (e) {
+          if (isAbortError(e)) throw e;
+          out(`\x1b[33m[shmakk · pm] team error: ${e.message} — falling back to single agent\x1b[0m\r\n`);
+        }
+        if (teamHandled) {
+          session.childWrite('\r');
+          return;
+        }
+      }
 
       // ── Plan-first execution ──
       // For complex multi-step requests, generate a plan and ask for approval
@@ -709,6 +820,15 @@ async function runOneSession(opts, registerSession) {
           savePlan(currentRoots()[0], plan);
           usedPlan = true;
 
+          // Capture git SHA before any changes — used by post-plan code review
+          const planBaseSha = captureGitSha(currentRoots()[0]);
+
+          // Write the plan tasks to TASKS.md so they're visible in the project
+          try {
+            addPlanTasks(currentRoots()[0], plan);
+            out(dim('[shmakk] tasks written to TASKS.md', colorsEnabled) + '\r\n');
+          } catch {}
+
           let lastUpdated = null;
           for (let i = 0; i < plan.tasks.length; i++) {
             if (ctrl.signal.aborted) break;
@@ -730,6 +850,7 @@ async function runOneSession(opts, registerSession) {
               plan.tasks[i].status = 'completed';
               plan.tasks[i].completedAt = new Date().toISOString();
               savePlan(currentRoots()[0], plan);
+              try { markTaskComplete(currentRoots()[0], plan.tasks[i].title, plan.tasks[i].completedAt); } catch {}
             } catch (e) {
               if (isAbortError(e)) {
                 plan.tasks[i].status = 'failed';
@@ -751,6 +872,7 @@ async function runOneSession(opts, registerSession) {
               }
               plan.tasks[i].status = 'skipped';
               savePlan(currentRoots()[0], plan);
+              try { markTaskSkipped(currentRoots()[0], plan.tasks[i].title); } catch {}
             }
           }
 
@@ -759,6 +881,18 @@ async function runOneSession(opts, registerSession) {
           plan.status = 'completed';
           savePlan(currentRoots()[0], plan);
           out(`\x1b[32m[shmakk] plan done: ${completed}/${plan.tasks.length} tasks completed${skipped ? `, ${skipped} skipped` : ''}\x1b[0m\r\n`);
+
+          // ── Post-plan code review ──
+          // Runs automatically after a plan completes. Examines git diff for the
+          // changes made by the plan and flags critical/important/minor issues.
+          if (completed > 0 && !ctrl.signal.aborted) {
+            try {
+              await runPostPlanReview({ plan, baseSha: planBaseSha, agentOpts, write: out });
+            } catch (e) {
+              if (isAbortError(e)) throw e;
+              out(`\x1b[33m[shmakk · review] error: ${e.message}\x1b[0m\r\n`);
+            }
+          }
 
           // TTS for the last task's response
           if (opts.tts && lastUpdated && lastUpdated.length) {
@@ -846,7 +980,10 @@ async function runOneSession(opts, registerSession) {
   });
 
   const { exitCode } = await session.waitExit();
-  audit.append({ kind: 'session-end', exitCode });
+  mcpManager.shutdown().catch(() => {});
+  try { const { closeBrowser } = require('./browser'); closeBrowser().catch(() => {}); } catch {}
+  audit.append({ kind: 'session-end', sessionId, exitCode });
+  try { sessionSearch.recordSessionEnd({ sessionId }); sessionSearch.closeDB(); } catch {}
   return exitCode;
 }
 

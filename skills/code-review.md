@@ -1,122 +1,129 @@
 ---
 name: code-review
-version: 1
+version: 2
 ---
 
 # Code Review
 
-Systematic code review covering correctness, security, performance, and maintainability.
+Systematic review of code changes — correctness first, then security, then quality. shmakk runs this automatically after every plan completes, and the agent should also use it on demand when asked.
 
 ## When to use this skill
 
-- User asks for a code review or feedback on code
-- User wants to find bugs, security issues, or performance problems
-- User wants to improve code quality or readability
-- User mentions "review", "check this code", "what's wrong with", "is this safe"
+- After a plan completes (shmakk triggers automatically via `runPostPlanReview`)
+- User asks for a code review, audit, or "what's wrong with this"
+- Before a merge to main / before publishing
+- After fixing a complex bug — verify the fix doesn't introduce new issues
+- When stuck — a structured review often surfaces the missing piece
 
 ## Procedure
 
-### Step 1: Understand context first
+### Step 1: Identify the scope
 
-Before reviewing, establish:
-- What does this code do? (if not obvious from reading)
-- What language/framework?
-- What's the most important concern: correctness, security, performance, readability?
-- Is this production code or a prototype?
+Determine what to review:
+- **Post-plan**: shmakk passes you the git diff between base SHA and head SHA
+- **PR review**: `git diff origin/main...HEAD`
+- **Single file**: `read_file` the specific file
+- **Working tree**: `git diff` (uncommitted changes)
 
-Read the code fully before commenting. Avoid reacting to the first issue found.
+Read the actual diff first — never review based on the user's description alone.
 
 ### Step 2: Correctness
 
 Check for logic errors:
-- Off-by-one errors in loops and array indexing
-- Incorrect boundary conditions
+- Off-by-one errors in loops, slices, and array indexing
+- Wrong boundary conditions (`< vs <=`, `>= 0 vs > 0`)
 - Missing null/undefined/empty checks
 - Wrong operator precedence
-- Incorrect handling of edge cases (empty input, very large numbers, special characters)
+- Edge cases: empty input, very large numbers, special characters, unicode
 - Race conditions in concurrent code
 - Missing error handling for operations that can fail (file I/O, network, parsing)
+- Functions that quietly return on error instead of surfacing the failure
 
 ### Step 3: Security
 
 Check for common vulnerabilities:
 
 **Injection:**
-- SQL injection: are queries parameterized, or is user input concatenated?
-- Command injection: is user input passed to `exec`, `system`, `eval`?
-- XSS: is user input escaped before rendering in HTML?
-- Path traversal: is user input used to construct file paths without sanitization?
+- SQL injection: parameterized queries, never string concatenation
+- Command injection: user input passed to `exec`, `system`, `eval`, `child_process.exec`
+- XSS: user input escaped before HTML rendering, `dangerouslySetInnerHTML` audited
+- Path traversal: user input sanitized before constructing file paths
 
-**Authentication/Authorization:**
-- Are authentication checks present on all protected endpoints?
-- Is authorization checked (not just authentication)?
-- Are secrets hardcoded? (passwords, API keys, tokens in source)
-- Are tokens/sessions validated properly?
+**Authentication / authorization:**
+- Tokens validated on every protected route, not just at login
+- Sessions stored in HttpOnly + Secure + SameSite cookies (never localStorage)
+- Password hashes use bcrypt/argon2/scrypt (never MD5 or SHA1)
+- Authorization checks at the action level, not just the navigation level
 
-**Data handling:**
-- Is sensitive data (passwords, PII) logged?
-- Are passwords stored hashed (bcrypt, argon2) not plaintext or MD5?
-- Is sensitive data transmitted over encrypted channels?
+**Secrets:**
+- No hardcoded API keys, tokens, or passwords in the diff
+- `.env`, `.env.local`, credentials files in `.gitignore`
+- Check `git log -p` for accidentally committed secrets
 
-**Dependencies:**
-- Check `package.json`, `requirements.txt`, etc. for known-vulnerable packages
+**File operations:**
+- Path traversal via `../`
+- Symlink attacks
+- TOCTOU (time-of-check vs time-of-use) races
 
 ### Step 4: Performance
 
-Look for obvious performance issues:
-- N+1 query patterns in database code
-- Unnecessary computation inside loops
-- Missing indexes for database queries on large tables
-- Large in-memory operations that could be streamed
-- Unbounded data fetching without pagination
+- N+1 query patterns (loop body that calls the database)
+- Unbounded computation inside hot paths
+- Missing indexes on filter / join / sort columns
+- Memory leaks: event listeners attached without cleanup, retained closures
+- Bundle bloat: full library imports when one function is needed
 
-### Step 5: Maintainability
+### Step 5: Quality
 
-- Are functions doing too many things? (>20-30 lines is often a warning sign)
-- Are variable and function names descriptive?
-- Is there duplicated logic that could be extracted?
-- Are magic numbers/strings named as constants?
-- Is complex logic explained (non-obvious invariants, workarounds)?
+- **Single responsibility**: does this function / class do one thing?
+- **Cyclomatic complexity**: nested conditionals that should be extracted
+- **Duplication**: same logic copied across files — extract a helper
+- **Naming**: do names accurately describe behavior, not implementation?
+- **Tests**: was test coverage added or updated for changed behavior?
+- **Comments**: do they explain *why* (non-obvious constraints) rather than *what*?
 
-### Step 6: Tests (if test code included)
+### Step 6: Report findings
 
-- Are edge cases covered?
-- Are tests testing behavior or implementation details?
-- Is test coverage meaningful or just hitting lines?
-
-## Output format
-
-Organize feedback by severity:
+Structure as:
 
 ```
-CODE REVIEW: [filename or description]
+CRITICAL
+  - file.js:42 — [issue], [fix]
 
-CRITICAL — Must fix before shipping
-• [Line 34] SQL injection: user input concatenated into query. Use parameterized queries.
-• [Line 67] Hardcoded API key. Move to environment variable.
+IMPORTANT
+  - file.js:80 — [issue], [fix]
 
-IMPORTANT — Should fix
-• [Line 12] No null check before accessing user.profile.name. Will throw if user has no profile.
-• [Line 89] N+1 query inside loop. Fetch all records in one query before the loop.
+MINOR
+  - file.js:120 — [issue], [fix]
 
-SUGGESTIONS — Consider
-• [Lines 45-78] This function is doing three things. Consider splitting into smaller functions.
-• [Line 23] Magic number 86400. Name it SECONDS_PER_DAY for clarity.
-
-LOOKS GOOD
-• Error handling is thorough and consistent
-• Authentication checks present on all routes
-• Input validation at API boundary
+Assessment: <ready to ship | fix critical first | needs significant rework>
 ```
 
-## Pitfalls
+For each issue:
+- **Cite file:line** — never vague locations
+- **State the problem**, not just the symptom
+- **Propose the fix** — exact code change when possible
 
-- Don't nitpick style when there are real issues — prioritize
-- Be specific: "this could be a security issue" is less useful than quoting the exact line and explaining the attack vector
-- Acknowledge tradeoffs: a slightly slower but simpler approach may be the right call
-- Don't rewrite the whole thing — focus on actual issues
-- Context matters: prototype code doesn't need production hardening
+If no issues found at any severity, say so plainly: `No issues found. Ready to proceed.`
 
-## Verification
+## Severity definitions
 
-After review: confirm that each CRITICAL issue is real (not a false positive based on missing context) before presenting it.
+- **CRITICAL** — bug that loses data, security vulnerability, breaks production
+- **IMPORTANT** — logic error that breaks a feature, missing error handling, performance regression
+- **MINOR** — style, naming, missing test for a non-critical path
+
+Never invent CRITICAL findings to look thorough. Most diffs have zero critical issues.
+
+## Tone
+
+- Direct, technical, specific
+- No praise sandwich — the user wants signal, not validation
+- Push back on the original author's choices when wrong, with technical reasoning
+- Acknowledge uncertainty when present ("If X is also true elsewhere, this becomes a problem")
+
+## Anti-patterns to avoid
+
+- Reviewing the description instead of the actual diff
+- Listing 20 minor nits when there's a critical bug present (signal vs noise)
+- Suggesting rewrites instead of minimal fixes
+- Citing best practices without explaining why they matter for THIS code

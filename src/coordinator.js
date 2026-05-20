@@ -12,6 +12,126 @@
 //     → agent builds system prompt with specialist context appended
 
 const SPECIALISTS = {
+  frontend: {
+    patterns: [
+      /\bcomponent\b/i, /\breact\b/i, /\bvue\b/i, /\bangular\b/i, /\bsvelte\b/i,
+      /\bnext\.?js\b/i, /\bnuxt\b/i, /\btssx?\b/i, /\bjsx?\b/i,
+      /\btailwind\b/i, /\bcss\s+module/i, /\bstyled.components\b/i,
+      /\buse(State|Effect|Memo|Callback|Ref|Context)\b/,
+      /\bprops?\b.*\bcomponent\b/i, /\brender(ing)?\b.*\bbug\b/i,
+      /\bui\s+(bug|issue|fix|component)\b/i,
+      /\bresponsive\b/i, /\bmobile.first\b/i, /\blayout\s+(issue|fix|bug)\b/i,
+      /\ba11y\b/i, /\baccessib/i, /\baria.?label\b/i,
+      /\bbundle\s+(size|split|chunk)\b/i, /\btree.?shaking\b/i,
+    ],
+    profile: 'builder',
+    indicator: 'frontend',
+    hint: `
+Specialist mode: Frontend Engineering
+Focus: components, state, styling, accessibility, and frontend performance.
+Approach:
+- Inspect existing components and conventions before creating new ones.
+- Keep components small and single-purpose. Prefer composition over configuration.
+- Follow the project's styling methodology (Tailwind, CSS modules, SCSS, styled-components).
+- Every interactive element must be keyboard-accessible with correct ARIA attributes.
+- Check for unnecessary re-renders, missing memoization, and unvirtualized long lists.
+- Test at multiple breakpoints. Verify touch target sizes (≥44px) on mobile.`,
+  },
+
+  ux: {
+    patterns: [
+      /\bux\b/i, /\buser\s+experience\b/i, /\busability\b/i,
+      /\bwireframe\b/i, /\bprototype\b/i, /\buser\s+(flow|journey|story)\b/i,
+      /\binformation\s+architecture\b/i, /\bonboarding\b/i,
+      /\bempty\s+state\b/i, /\berror\s+(message|state|ux)\b/i,
+      /\bfriction\b/i, /\bconversion\s+rate\b/i, /\bdrop.?off\b/i,
+      /\btoo\s+many\s+(steps|clicks)\b/i, /\bcta\s+(button|text|copy)\b/i,
+      /\binteraction\s+design\b/i, /\bconfusing\s+(ui|interface|layout)\b/i,
+    ],
+    profile: 'balanced',
+    indicator: 'ux',
+    hint: `
+Specialist mode: UX/UI Design
+Focus: user flows, information architecture, interaction design, usability, accessibility.
+Approach:
+- Start with the user's goal and work backwards to the interface — never start with components.
+- Map the full journey: entry → action → exit, including error paths.
+- Identify friction: too many steps, ambiguous labels, missing feedback, confusing recovery.
+- Accessibility: sufficient contrast (≥4.5:1), keyboard navigation, 44px touch targets, screen reader support.
+- Propose 2–3 alternatives for significant interaction patterns, with tradeoffs explained.`,
+  },
+
+  design: {
+    patterns: [
+      /\bdesign\s+(system|token|language|kit)\b/i,
+      /\bcolor\s+(system|palette|token|scheme)\b/i,
+      /\btypograph(y|ic)\b/i, /\bfont.?scale\b/i, /\btype\s+scale\b/i,
+      /\bspacing\s+(system|scale|token)\b/i,
+      /\bdark\s+mode\b/i, /\btheme\b.*\b(switch|toggle|support)\b/i,
+      /\bstorybook\b/i, /\bfigma\b/i, /\bdesign\s+token\b/i,
+      /\bcss\s+(variable|custom\s+property)\b/i,
+      /\bvisual\s+(consistency|hierarchy|design)\b/i,
+      /\bbrand\s+(color|font|guideline|consistency)\b/i,
+    ],
+    profile: 'balanced',
+    indicator: 'design',
+    hint: `
+Specialist mode: Visual Design & Design Systems
+Focus: design tokens, color systems, typography, spacing, CSS architecture, dark mode, brand consistency.
+Approach:
+- Audit existing design decisions before introducing anything new. Find the pattern, don't break it.
+- Define tokens centrally — never hardcode visual values (colors, spacing, radii) in components.
+- Typography: establish a clear type scale. Verify line-height, max-width (65ch), and font loading.
+- Color: verify contrast ratios (≥4.5:1 text, ≥3:1 UI). Build semantic aliases, not raw hex.
+- Dark mode: every semantic token needs explicit light and dark values via CSS custom properties.`,
+  },
+
+  mobile: {
+    patterns: [
+      /\bmobile\s+app\b/i, /\breact\s+native\b/i, /\bflutter\b/i, /\bexpo\b/i,
+      /\bios\b/i, /\bandroid\b/i, /\bswiftui\b/i, /\bjet(pack)?\s+compose\b/i,
+      /\bapp\s+store\b/i, /\bplay\s+store\b/i, /\bpush\s+notification\b/i,
+      /\bdeep\s+link\b/i, /\boffline\s+(mode|support|sync)\b/i,
+      /\bflatlist\b/i, /\bnative\s+(module|component|bridge)\b/i,
+      /\bjank\b/i, /\bui\s+thread\b/i, /\bjs\s+thread\b/i,
+    ],
+    profile: 'builder',
+    indicator: 'mobile',
+    hint: `
+Specialist mode: Mobile Engineering
+Focus: React Native, Flutter, iOS, Android — UI, navigation, offline, push, performance, app store.
+Approach:
+- Distinguish cross-platform (React Native, Flutter) and native requirements early.
+- Lists: always FlatList/SectionList, never ScrollView for dynamic data.
+- Navigation: stack/tab/drawer patterns. Validate deep link handling.
+- Offline: identify data needing local persistence. Choose appropriate storage.
+- Performance: no heavy computation on JS/main thread during animations. Profile on low-end devices.
+- App store: check bundle IDs, version codes, required permissions, privacy manifests.`,
+  },
+
+  web: {
+    patterns: [
+      /\bnext\.?js\b/i, /\bnuxt\b/i, /\bsveltekit\b/i, /\bremix\b/i, /\bastro\b/i,
+      /\bssr\b/i, /\bssg\b/i, /\bisr\b/i, /\bserver.?side\s+render\b/i,
+      /\bcore\s+web\s+vital\b/i, /\blighthouse\b/i, /\blcp\b/i, /\bcls\b/i,
+      /\bseo\b/i, /\bmeta\s+tag\b/i, /\bopen\s+graph\b/i, /\bcanonical\b/i,
+      /\bweb\s+(app|application|site|performance|security)\b/i,
+      /\bservice\s+worker\b/i, /\bpwa\b/i, /\bweb\s+manifest\b/i,
+    ],
+    profile: 'builder',
+    indicator: 'web',
+    hint: `
+Specialist mode: Full-Stack Web Development
+Focus: SSR/SSG frameworks, routing, Core Web Vitals, SEO, forms, auth, web security.
+Approach:
+- Understand the rendering strategy first (CSR/SSR/SSG/ISR) — it affects every decision.
+- Performance: measure first (Lighthouse), then optimize. Target LCP < 2.5s, CLS < 0.1.
+- SEO: title, meta description, canonical, Open Graph, structured data, sitemap.
+- Forms: validate client-side AND server-side. Inline error messages, not summary-only.
+- Security headers: HSTS, CSP, X-Frame-Options, X-Content-Type-Options.
+- Auth: HttpOnly cookies for session tokens, rate limiting on auth endpoints.`,
+  },
+
   code: {
     patterns: [
       /\brefactor\b/i, /\bcode\s*review\b/i, /\bdebugg?(?:ing)?\b/i,

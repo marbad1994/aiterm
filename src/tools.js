@@ -6,6 +6,9 @@ const path = require('path');
 const { execFile } = require('child_process');
 const { classifyRunCommand, isSecretPath } = require('./safety');
 const { webSearch, fetchUrl } = require('./web');
+const { dispatchBrowser, classifyBrowserCommand } = require('./browser');
+const { recordEdit } = require('./edit-tracker');
+const { appendMemory } = require('./memory');
 
 const MAX_FILE_BYTES = 64 * 1024;
 
@@ -94,13 +97,44 @@ const TOOLS = [
     description: 'Delete a file inside the workspace. Always requires user confirmation.',
     parameters: { type: 'object', required: ['path'], properties: { path: { type: 'string' } } },
   }},
+  { type: 'function', function: {
+    name: 'remember',
+    description: 'Save a durable fact to agent memory so it survives across sessions. Use for codebase quirks, API gotchas, user preferences, or anything you wouldn\'t want to re-discover next session. Keep facts short and specific.',
+    parameters: {
+      type: 'object',
+      required: ['fact'],
+      properties: {
+        fact: { type: 'string', description: 'Short single-line fact, e.g. "Auth uses HS256 JWTs, secret in $JWT_SECRET"' },
+        category: { type: 'string', description: 'Section to file the fact under. Examples: Codebase, Preferences, Gotchas, API quirks. Default: Notes.' },
+        scope: { type: 'string', enum: ['global', 'workspace'], description: 'global = applies to all workspaces; workspace = only this project. Default: workspace (project-specific facts are usually safer to scope).' },
+      },
+    },
+  }},
+  { type: 'function', function: {
+    name: 'browser',
+    description: 'Control a headless browser. Commands: navigate (go to URL), click (CSS selector), type (fill input), read_page (extract page content, links, forms), screenshot (save PNG), evaluate (run JS), select (dropdown), wait (for selector or seconds), scroll (up/down), close.',
+    parameters: {
+      type: 'object',
+      required: ['command'],
+      properties: {
+        command: { type: 'string', enum: ['navigate', 'click', 'type', 'read_page', 'screenshot', 'evaluate', 'select', 'wait', 'scroll', 'close'] },
+        url: { type: 'string', description: 'URL for navigate' },
+        selector: { type: 'string', description: 'CSS selector for click/type/select/wait' },
+        text: { type: 'string', description: 'Text to type or option to select' },
+        code: { type: 'string', description: 'JavaScript for evaluate' },
+        seconds: { type: 'number', description: 'Seconds to wait' },
+        direction: { type: 'string', enum: ['up', 'down'], description: 'Scroll direction' },
+      },
+    },
+  }},
 ];
 
 // Tool safety classification.
 // 'safe'      → auto mode runs it without asking; review mode asks with [Y/n]
 // 'unsafe'    → both modes ask, defaulting to No  ([y/N])
 // 'uncertain' → both modes ask, defaulting to No  ([y/N])
-function classifyTool(name, args) {
+function classifyTool(name, args, mcpManager) {
+  if (name.startsWith('mcp__') && mcpManager) return mcpManager.classifyTool(name);
   if (name === 'read_file' || name === 'list_dir') {
     if (args.path && isSecretPath(args.path)) return 'unsafe';
     return 'safe';
@@ -116,10 +150,13 @@ function classifyTool(name, args) {
   if (name === 'delete_file') return 'unsafe'; // user wants delete to always prompt
   if (name === 'run') return classifyRunCommand(args.cmd || '');
   if (name === 'web_search' || name === 'fetch_url') return 'safe';
+  if (name === 'browser') return classifyBrowserCommand(args);
+  if (name === 'remember') return 'safe';
   return 'uncertain';
 }
 
-function describeTool(name, args) {
+function describeTool(name, args, mcpManager) {
+  if (name.startsWith('mcp__') && mcpManager) return mcpManager.describeTool(name, args);
   if (name === 'read_file') return `read ${args.path}${args.mode ? ` (${args.mode})` : ''}`;
   if (name === 'list_dir') return `list ${args.path || '.'}`;
   if (name === 'write_file') return `write ${args.path} (${(args.content || '').length} bytes)`;
@@ -129,6 +166,17 @@ function describeTool(name, args) {
   if (name === 'run') return `run command (see below)`;
   if (name === 'web_search') return `web search: "${(args.query || '').slice(0, 100)}"`;
   if (name === 'fetch_url') return `fetch ${args.url}`;
+  if (name === 'remember') return `remember [${args.scope || 'workspace'}/${args.category || 'Notes'}]: ${(args.fact || '').slice(0, 100)}`;
+  if (name === 'browser') {
+    const cmd = args.command || '';
+    if (cmd === 'navigate') return `browser navigate ${args.url || ''}`;
+    if (cmd === 'click') return `browser click ${args.selector || ''}`;
+    if (cmd === 'type') return `browser type into ${args.selector || ''}`;
+    if (cmd === 'read_page') return 'browser read page content';
+    if (cmd === 'screenshot') return 'browser screenshot';
+    if (cmd === 'evaluate') return `browser eval JS`;
+    return `browser ${cmd}`;
+  }
   return `${name} ${JSON.stringify(args).slice(0, 80)}`;
 }
 
@@ -156,14 +204,18 @@ function runCmd(cwd, cmd, signal) {
   });
 }
 
-async function dispatchTool(name, args, roots, confirmTool, signal) {
+async function dispatchTool(name, args, roots, confirmTool, signal, mcpManager) {
   if (signal && signal.aborted) return { error: 'aborted' };
-  const safety = classifyTool(name, args);
+  const safety = classifyTool(name, args, mcpManager);
   if (confirmTool) {
-    const ok = await confirmTool({ name, args, safety, description: describeTool(name, args) });
+    const ok = await confirmTool({ name, args, safety, description: describeTool(name, args, mcpManager) });
     if (!ok) return { error: 'user declined' };
   }
   if (signal && signal.aborted) return { error: 'aborted' };
+  // MCP tools: route to MCP manager
+  if (name.startsWith('mcp__') && mcpManager) {
+    return mcpManager.dispatchTool(name, args, signal);
+  }
   if (name === 'read_file') {
     const p = within(roots, args.path);
     if (!p) return { error: 'path outside workspace' };
@@ -226,8 +278,10 @@ async function dispatchTool(name, args, roots, confirmTool, signal) {
   if (name === 'write_file') {
     const p = within(roots, args.path);
     if (!p) return { error: 'path outside workspace' };
+    const oldContent = fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null;
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, args.content ?? '');
+    recordEdit({ filePath: p, oldContent, newContent: args.content ?? '', tool: 'write_file' });
     return { ok: true };
   }
   if (name === 'edit_file') {
@@ -244,6 +298,7 @@ async function dispatchTool(name, args, roots, confirmTool, signal) {
       if (second !== -1) return { error: 'old_string is ambiguous; appears multiple times' };
       const updated = content.slice(0, first) + newString + content.slice(first + oldString.length);
       fs.writeFileSync(p, updated);
+      recordEdit({ filePath: p, oldContent: content, newContent: updated, tool: 'edit_file' });
       return { ok: true, replaced: 1 };
     } catch (e) { return { error: String(e.message) }; }
   }
@@ -268,6 +323,20 @@ async function dispatchTool(name, args, roots, confirmTool, signal) {
   }
   if (name === 'fetch_url') {
     return await fetchUrl(args.url, signal);
+  }
+  if (name === 'browser') {
+    return await dispatchBrowser(args);
+  }
+  if (name === 'remember') {
+    const r = appendMemory({
+      category: args.category,
+      fact: args.fact,
+      scope: args.scope === 'global' ? 'global' : 'workspace',
+      cwd: roots[0],
+    });
+    return r.ok
+      ? { ok: true, saved_to: r.path, line: r.line }
+      : { error: r.error };
   }
   return { error: `unknown tool: ${name}` };
 }
@@ -341,7 +410,9 @@ function parseFallbackActions(content) {
 }
 
 function parseXmlFallbackActions(content) {
-  const text = String(content || '');
+  // Normalize DeepSeek DSML format: <｜｜DSML｜｜tool_calls> → <tool_calls>
+  // DSML uses fullwidth vertical bars (U+FF5C) around tag names.
+  const text = String(content || '').replace(/<(\/?)(?:｜+DSML)?｜+/g, '<$1').replace(/｜+>/g, '>');
   if (!text) return [];
   const allowed = new Set(TOOLS.map((t) => t.function.name));
   const actions = [];

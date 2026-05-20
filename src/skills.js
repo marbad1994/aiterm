@@ -13,18 +13,24 @@ function candidatePaths(name, cwd = process.cwd()) {
   const n = safeName(name);
   const home = os.homedir();
   return [
+    // Workspace-level
     path.join(cwd, '.shmakk', 'skills', `${n}.md`),
     path.join(cwd, '.shmakk', 'skills', n, 'SKILL.md'),
     path.join(cwd, '.claude', 'skills', `${n}.md`),
     path.join(cwd, '.claude', 'skills', n, 'SKILL.md'),
     path.join(cwd, '.codex', 'skills', `${n}.md`),
     path.join(cwd, '.codex', 'skills', n, 'SKILL.md'),
+    // User home
     path.join(home, '.shmakk', 'skills', `${n}.md`),
     path.join(home, '.shmakk', 'skills', n, 'SKILL.md'),
     path.join(home, '.claude', 'skills', `${n}.md`),
     path.join(home, '.claude', 'skills', n, 'SKILL.md'),
     path.join(home, '.codex', 'skills', `${n}.md`),
     path.join(home, '.codex', 'skills', n, 'SKILL.md'),
+    // Global config (postinstall destination)
+    path.join(home, '.config', 'shmakk', 'skills', `${n}.md`),
+    // Package-bundled fallback (last resort)
+    path.join(__dirname, '..', 'skills', `${n}.md`),
   ];
 }
 
@@ -363,6 +369,9 @@ function loadSkillGlobally(name) {
 
   const registry = loadGlobalRegistry();
   const checksum = sha256(validation.raw);
+  // Global registry: skills are "available", never auto-active.
+  // active-skill.json is workspace-only — a global skill must be explicitly
+  // loaded into a workspace session to become active.
   registry.skills[validation.normalizedName] = {
     name: validation.normalizedName,
     version: validation.version,
@@ -370,16 +379,11 @@ function loadSkillGlobally(name) {
     localPath: localSkillPath,
     checksum,
     bytes: Buffer.byteLength(validation.raw, 'utf8'),
-    loadedAt: new Date().toISOString(),
-    active: true,
+    registeredAt: new Date().toISOString(),
+    active: false,
   };
 
-  for (const k of Object.keys(registry.skills)) {
-    if (k !== validation.normalizedName) registry.skills[k].active = false;
-  }
-
   saveGlobalRegistry(registry);
-  fs.writeFileSync(globalActiveSkillPath(), JSON.stringify(registry.skills[validation.normalizedName], null, 2));
 
   return { ok: true, name: validation.normalizedName, source: found, localPath: localSkillPath, version: validation.version };
 }
@@ -403,14 +407,10 @@ function importGlobalSkillContent(raw, sourceLabel, fallbackName = 'downloaded-s
     localPath: localSkillPath,
     checksum: sha256(validation.raw),
     bytes: Buffer.byteLength(validation.raw, 'utf8'),
-    loadedAt: new Date().toISOString(),
-    active: true,
+    registeredAt: new Date().toISOString(),
+    active: false,
   };
-  for (const k of Object.keys(registry.skills)) {
-    if (k !== name) registry.skills[k].active = false;
-  }
   saveGlobalRegistry(registry);
-  fs.writeFileSync(globalActiveSkillPath(), JSON.stringify(registry.skills[name], null, 2));
   return { ok: true, name, source: sourceLabel, localPath: localSkillPath, version: validation.version };
 }
 
@@ -500,8 +500,38 @@ function readActiveSkillGlobally() {
 }
 
 function listSkillsGlobally() {
-  const r = loadGlobalRegistry();
-  return Object.values(r.skills || {}).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  // Scan the global skills directory directly — the install script copies .md files
+  // but does not write to the registry, so registry-only lookup would miss them.
+  const dir = globalSkillsDir();
+  const registryEntries = loadGlobalRegistry().skills || {};
+  const available = {};
+
+  if (fs.existsSync(dir)) {
+    for (const file of fs.readdirSync(dir)) {
+      if (!file.endsWith('.md')) continue;
+      const skillPath = path.join(dir, file);
+      try {
+        const raw = fs.readFileSync(skillPath, 'utf8');
+        const fm = parseFrontmatter(raw);
+        const name = safeName(fm.meta.name || path.basename(file, '.md'));
+        available[name] = {
+          name,
+          version: String(fm.meta.version || '1').trim(),
+          source: skillPath,
+          localPath: skillPath,
+          bytes: Buffer.byteLength(raw, 'utf8'),
+          active: false,  // global skills are never auto-active
+        };
+      } catch {}
+    }
+  }
+
+  // Overlay registry entries (they may have richer metadata)
+  for (const [k, v] of Object.entries(registryEntries)) {
+    available[k] = { ...(available[k] || {}), ...v, active: false };
+  }
+
+  return Object.values(available).sort((a, b) => String(a.name).localeCompare(String(b.name)));
 }
 
 function skillStatusGlobally() {

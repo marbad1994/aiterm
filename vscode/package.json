@@ -1,0 +1,80 @@
+{
+  "name": "shmakk-vscode",
+  "displayName": "shmakk",
+  "description": "shmakk AI agent — @shmakk chat participant, command correction, tool-driven tasks",
+  "version": "1.0.0",
+  "publisher": "shmakk",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": [
+    "Chat",
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "chatParticipants": [
+      {
+        "id": "shmakk",
+        "fullName": "shmakk",
+        "name": "shmakk",
+        "description": "AI-supervised terminal agent — code editing, command execution, web search, skills",
+        "isSticky": true
+      }
+    ],
+    "commands": [
+      {
+        "command": "shmakk.openSettings",
+        "title": "shmakk: Open Settings Panel",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "shmakk.toggleSettings",
+        "title": "shmakk: Toggle Settings Panel"
+      },
+      {
+        "command": "shmakk.switchEndpoint",
+        "title": "shmakk: Switch Endpoint"
+      },
+      {
+        "command": "shmakk.loadSkill",
+        "title": "shmakk: Load Skill"
+      },
+      {
+        "command": "shmakk.listSessions",
+        "title": "shmakk: List Sessions"
+      },
+      {
+        "command": "shmakk.clearSessions",
+        "title": "shmakk: Clear All Sessions"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        { "command": "shmakk.openSettings" },
+        { "command": "shmakk.toggleSettings" },
+        { "command": "shmakk.switchEndpoint" },
+        { "command": "shmakk.loadSkill" },
+        { "command": "shmakk.listSessions" },
+        { "command": "shmakk.clearSessions" }
+      ],
+      "editor/title": [
+        {
+          "command": "shmakk.openSettings",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.config.js",
+    "watch": "node esbuild.config.js --watch",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.93.0",
+    "esbuild": "^0.24.0"
+  }
+}
