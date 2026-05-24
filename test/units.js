@@ -525,13 +525,16 @@ const test = (name, fn) => tests.push({ name, fn });
 {
   const { shouldPlan } = require('../src/planner');
 
-  test('planner: triggers on action verbs (add, fix, refactor, etc.)', () => {
-    assert.strictEqual(shouldPlan('add pagination to the users list'), true);
-    assert.strictEqual(shouldPlan('fix the authentication bug in login.js'), true);
-    assert.strictEqual(shouldPlan('refactor the database access layer'), true);
-    assert.strictEqual(shouldPlan('migrate the API to async/await'), true);
-    assert.strictEqual(shouldPlan('set up CI/CD with GitHub Actions'), true);
-    assert.strictEqual(shouldPlan('remove deprecated console.log calls'), true);
+  test('planner: triggers only on very large multi-phase projects (500+ chars with scope signal)', () => {
+    // Planner was deliberately scoped down — most work goes to team PM or single agent.
+    // Short action requests should NOT trigger plan-first execution.
+    assert.strictEqual(shouldPlan('add pagination to the users list'), false);
+    assert.strictEqual(shouldPlan('refactor the database access layer'), false);
+    // Long scoped projects with scope signals (>500 chars + migrate+entire) DO trigger
+    const filler = 'background context information '.repeat(15);
+    const bigProject = filler + 'I need to migrate the entire monolith to a microservices architecture over the next sprint, including the database layer, auth module, event bus, and every controller. Each phase needs verification before moving on.';
+    assert.ok(bigProject.length > 500, `test prerequisite: length should exceed 500, got ${bigProject.length}`);
+    assert.strictEqual(shouldPlan(bigProject), true);
   });
 
   test('planner: skips questions and conversational input', () => {
@@ -553,9 +556,9 @@ const test = (name, fn) => tests.push({ name, fn });
     assert.strictEqual(shouldPlan('add test'), false);
   });
 
-  test('planner: long inputs without obvious actions still plan', () => {
-    const long = 'I need help with the authentication system which has been showing weird behavior in production since yesterday';
-    assert.strictEqual(shouldPlan(long), true);
+  test('planner: + prefix forces plan; ! prefix bypasses', () => {
+    assert.strictEqual(shouldPlan('+add pagination to the users list'), true);
+    assert.strictEqual(shouldPlan('!build a complete app from scratch over the next week'), false);
   });
 }
 
@@ -907,6 +910,74 @@ const test = (name, fn) => tests.push({ name, fn });
       assert.ok(typeof a.role === 'string' && a.role.length > 0);
       assert.ok(typeof a.task === 'string' && a.task.length > 0);
     }
+  });
+}
+
+// ── team: skill-driven sub-agents ─────────────────────────────────────────
+{
+  const fs = require('fs');
+  const path = require('path');
+  const os = require('os');
+  const teamSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'team.js'), 'utf8');
+
+  test('team: ROLE_TO_SKILL maps every standard role to a skill name', () => {
+    // Verifies the literal exists; we don't test resolution here because
+    // it depends on filesystem state. The skill resolution is exercised by
+    // smoke tests at the CLI level.
+    assert.match(teamSrc, /const ROLE_TO_SKILL = \{/);
+    for (const role of ['frontend', 'backend', 'ux', 'design', 'mobile', 'web', 'devops', 'security', 'testing', 'code', 'docs', 'research', 'marketing', 'system']) {
+      assert.match(teamSrc, new RegExp(`${role}: '`),
+        `ROLE_TO_SKILL should include "${role}:"`);
+    }
+  });
+
+  test('team: runSubAgent accepts an explicit skill override', () => {
+    assert.match(teamSrc, /skill = null,\s*\/\/ optional/);
+    assert.match(teamSrc, /const wantedSkill = skill \|\| ROLE_TO_SKILL\[role\] \|\| role;/);
+  });
+
+  test('team: loadSkillContent function present and scans subdirs', () => {
+    assert.match(teamSrc, /function loadSkillContent\(skillName, roots\)/);
+    assert.match(teamSrc, /for \(const entry of fs\.readdirSync\(globalRoot/);
+  });
+
+  test('team: PM plan prompt is built dynamically per call', () => {
+    assert.match(teamSrc, /content: buildPmPlanPrompt\(\)/);
+    assert.match(teamSrc, /function buildSkillCatalogHint\(\)/);
+  });
+
+  test('team: result includes skillUsed field', () => {
+    assert.match(teamSrc, /skillUsed: loaded \? wantedSkill : null/);
+  });
+}
+
+// ── correction: case-preserving typo fix ────────────────────────────────
+{
+  const { correct } = require('../src/correction');
+
+  test('correction: preserves capital case of the typed command', async () => {
+    const glossary = { commands: { git: { subcommands: ['status', 'log'] } } };
+    // Lowercase typo gets lowercase correction (baseline)
+    const r1 = await correct({ input: 'gti status', glossary });
+    assert.strictEqual(r1.category, 'command_correction');
+    assert.strictEqual(r1.proposed, 'git status');
+
+    // Initial capital is preserved: Gti → Git, not git
+    const r2 = await correct({ input: 'Gti status', glossary });
+    assert.strictEqual(r2.category, 'command_correction');
+    assert.strictEqual(r2.proposed, 'Git status');
+
+    // All-caps stays all-caps: GTI → GIT
+    const r3 = await correct({ input: 'GTI status', glossary });
+    assert.strictEqual(r3.category, 'command_correction');
+    assert.strictEqual(r3.proposed, 'GIT status');
+  });
+
+  test('correction: preserves subcommand case too', async () => {
+    const glossary = { commands: { git: { subcommands: ['status', 'commit'] } } };
+    const r = await correct({ input: 'gti Statu', glossary });
+    assert.strictEqual(r.category, 'command_correction');
+    assert.strictEqual(r.proposed, 'git Status');
   });
 }
 

@@ -1,7 +1,6 @@
-// Named endpoint presets. Loads ~/.config/shmakk/endpoints.js (or
-// ~/.config/shmakk/endpoints.json for backwards compat) and applies the
-// selected preset by setting process.env.SHMAKK_* variables before any
-// other module reads them.
+// Named endpoint presets with hotswap support.
+// Loads ~/.config/shmakk/endpoints.js (or .json for backwards compat).
+// Can switch endpoints mid-session without restarting.
 //
 // Format (~/.config/shmakk/endpoints.js):
 // {
@@ -9,13 +8,18 @@
 //     "base_url": "https://api.example.com/v1",
 //     "api_key": "sk-...",
 //     "model": "gpt-4o-mini",
-//     "headers": "x-custom=value"
+//     "headers": "x-custom=value",
+//     "registry": "claudeHaiku,claudeSonnet,ministral"
 //   }
 // }
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+
+let currentEndpointName = null;
+let currentEndpointConfig = null;
+let endpointsCwd = null;
 
 function configPath(cwd) {
   const configDir = path.join(os.homedir(), '.config', 'shmakk');
@@ -50,12 +54,37 @@ function applyEndpoint(name, cwd) {
   if (!endpoints || !endpoints[name]) return false;
 
   const cfg = endpoints[name];
-  if (cfg.base_url)  process.env.SHMAKK_BASE_URL  = cfg.base_url;
-  if (cfg.api_key)   process.env.SHMAKK_API_KEY   = cfg.api_key;
-  if (cfg.model)     process.env.SHMAKK_MODEL     = cfg.model;
-  if (cfg.headers)   process.env.SHMAKK_HEADERS   = cfg.headers;
+  currentEndpointName = name;
+
+  // Normalize: accept both camelCase and snake_case
+  const normalized = {
+    base_url: cfg.base_url || cfg.baseUrl,
+    api_key: cfg.api_key || cfg.apiKey,
+    model: cfg.model,
+    headers: cfg.headers,
+    registry: cfg.registry,
+  };
+
+  currentEndpointConfig = normalized;
+  endpointsCwd = cwd;
+
+  // Also update env vars for backwards compatibility
+  if (normalized.base_url)  process.env.SHMAKK_BASE_URL  = normalized.base_url;
+  if (normalized.api_key)   process.env.SHMAKK_API_KEY   = normalized.api_key;
+  if (normalized.model)     process.env.SHMAKK_MODEL     = normalized.model;
+  if (normalized.headers)   process.env.SHMAKK_HEADERS   = normalized.headers;
+  if (normalized.registry)  process.env.SHMAKK_REGISTRY  = normalized.registry;
 
   return true;
+}
+
+function getCurrentEndpoint() {
+  // Returns current endpoint config if one is active
+  return currentEndpointConfig ? { ...currentEndpointConfig } : null;
+}
+
+function getCurrentEndpointName() {
+  return currentEndpointName;
 }
 
 function listEndpoints(cwd) {
@@ -64,4 +93,9 @@ function listEndpoints(cwd) {
   return Object.keys(endpoints);
 }
 
-module.exports = { applyEndpoint, listEndpoints };
+module.exports = {
+  applyEndpoint,
+  listEndpoints,
+  getCurrentEndpoint,
+  getCurrentEndpointName,
+};

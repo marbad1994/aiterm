@@ -5,6 +5,40 @@ const path = require('path');
 const MAX_SKILL_BYTES = 64 * 1024;
 const DEFAULT_RENDER_BYTES = 12 * 1024;
 
+// Known categories. Anything else falls under 'general'.
+// Category id → human label + description (shown in `list skill categories`).
+const CATEGORIES = {
+  dev:           { label: 'Development',    blurb: 'code review, refactor, debugging, testing patterns' },
+  frontend:      { label: 'Frontend',       blurb: 'React/Vue/Angular/Svelte UI engineering' },
+  backend:       { label: 'Backend',        blurb: 'APIs, databases, server-side logic' },
+  mobile:        { label: 'Mobile',         blurb: 'iOS, Android, React Native, Flutter, Expo' },
+  devops:        { label: 'DevOps',         blurb: 'CI/CD, Docker, deploy, infrastructure' },
+  security:      { label: 'Security',       blurb: 'vulnerability scanning, auditing, compliance' },
+  design:        { label: 'Design',         blurb: 'UX/UI, design systems, visual design' },
+  docs:          { label: 'Documentation',  blurb: 'technical writing, API docs, READMEs' },
+  research:      { label: 'Research',       blurb: 'web research, summarization, source analysis' },
+  files:         { label: 'Files & Docs',   blurb: 'PDF, DOCX, XLSX, PPTX manipulation' },
+  system:        { label: 'System',         blurb: 'OS admin, logs, monitoring, file ops, terminal' },
+  business:      { label: 'Business',       blurb: 'budget, invoices, expenses, compliance, contracts' },
+  productivity:  { label: 'Productivity',   blurb: 'tasks, calendar, notes, email, reminders' },
+  media:         { label: 'Media',          blurb: 'audio, video, image processing' },
+  planning:      { label: 'Planning',       blurb: 'PRD, architecture, brainstorming, breakdowns' },
+  workflow:      { label: 'Workflow',       blurb: 'agents, coordination, pair programming, TDD' },
+  diagrams:      { label: 'Diagrams',       blurb: 'excalidraw, drawio, plantuml, mermaid' },
+  database:      { label: 'Database',       blurb: 'SQL, Postgres, optimization, schema' },
+  general:       { label: 'General',        blurb: 'uncategorized' },
+};
+
+function knownCategories() { return Object.keys(CATEGORIES); }
+function categoryInfo(id) { return CATEGORIES[id] || null; }
+
+// Normalize a category value from frontmatter. Empty/missing → 'general'.
+function normalizeCategory(value) {
+  const v = String(value || '').trim().toLowerCase();
+  if (!v) return 'general';
+  return CATEGORIES[v] ? v : v;  // allow user-defined categories too
+}
+
 function safeName(name) {
   return String(name || '').trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-');
 }
@@ -12,6 +46,22 @@ function safeName(name) {
 function candidatePaths(name, cwd = process.cwd()) {
   const n = safeName(name);
   const home = os.homedir();
+  const globalRoot = path.join(home, '.config', 'shmakk', 'skills');
+
+  // The global skills directory is now organized into category subdirectories.
+  // Scan all subdirs at startup so `load skill <name>` finds it regardless of
+  // which category folder it lives in.
+  const globalSubdirHits = [];
+  try {
+    if (fs.existsSync(globalRoot)) {
+      for (const entry of fs.readdirSync(globalRoot, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          globalSubdirHits.push(path.join(globalRoot, entry.name, `${n}.md`));
+        }
+      }
+    }
+  } catch {}
+
   return [
     // Workspace-level
     path.join(cwd, '.shmakk', 'skills', `${n}.md`),
@@ -27,8 +77,9 @@ function candidatePaths(name, cwd = process.cwd()) {
     path.join(home, '.claude', 'skills', n, 'SKILL.md'),
     path.join(home, '.codex', 'skills', `${n}.md`),
     path.join(home, '.codex', 'skills', n, 'SKILL.md'),
-    // Global config (postinstall destination)
-    path.join(home, '.config', 'shmakk', 'skills', `${n}.md`),
+    // Global config — flat layout + category subdirectories
+    path.join(globalRoot, `${n}.md`),
+    ...globalSubdirHits,
     // Package-bundled fallback (last resort)
     path.join(__dirname, '..', 'skills', `${n}.md`),
   ];
@@ -251,7 +302,23 @@ function renderActiveSkillForPrompt(cwd = process.cwd(), maxBytes = DEFAULT_REND
 
 function listSkills(cwd = process.cwd()) {
   const r = loadRegistry(cwd);
-  return Object.values(r.skills || {}).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  return Object.values(r.skills || {})
+    .map((s) => ({
+      ...s,
+      category: normalizeCategory(s.category),
+    }))
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+}
+
+// Return ALL skills available across workspace + global, deduplicated by name.
+// Workspace entries take precedence (they have active state).
+function listAllSkills(cwd = process.cwd()) {
+  const workspace = listSkills(cwd);
+  const global = listSkillsGlobally();
+  const byName = new Map();
+  for (const s of global) byName.set(s.name, { ...s, scope: 'global' });
+  for (const s of workspace) byName.set(s.name, { ...s, scope: 'workspace' });
+  return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function unloadSkill(name, cwd = process.cwd()) {
@@ -515,31 +582,60 @@ function readActiveSkillGlobally() {
   }
 }
 
+// Walk skills directory one level deep. Returns array of { skillPath, subdir }.
+// subdir is the immediate parent directory name (or null if at top level).
+function _scanSkillsDir(dir) {
+  if (!fs.existsSync(dir)) return [];
+  const found = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith('.md')) {
+      found.push({ skillPath: path.join(dir, entry.name), subdir: null });
+    } else if (entry.isDirectory()) {
+      // One level deep — category subdirectory
+      const subDir = path.join(dir, entry.name);
+      try {
+        for (const inner of fs.readdirSync(subDir)) {
+          if (inner.endsWith('.md')) {
+            found.push({ skillPath: path.join(subDir, inner), subdir: entry.name });
+          }
+        }
+      } catch {}
+    }
+  }
+  return found;
+}
+
 function listSkillsGlobally() {
   // Scan the global skills directory directly — the install script copies .md files
   // but does not write to the registry, so registry-only lookup would miss them.
+  // Now walks one level of subdirectories (used as category folders).
   const dir = globalSkillsDir();
   const registryEntries = loadGlobalRegistry().skills || {};
   const available = {};
 
-  if (fs.existsSync(dir)) {
-    for (const file of fs.readdirSync(dir)) {
-      if (!file.endsWith('.md')) continue;
-      const skillPath = path.join(dir, file);
-      try {
-        const raw = fs.readFileSync(skillPath, 'utf8');
-        const fm = parseFrontmatter(raw);
-        const name = safeName(fm.meta.name || path.basename(file, '.md'));
-        available[name] = {
-          name,
-          version: String(fm.meta.version || '1').trim(),
-          source: skillPath,
-          localPath: skillPath,
-          bytes: Buffer.byteLength(raw, 'utf8'),
-          active: false,  // global skills are never auto-active
-        };
-      } catch {}
-    }
+  for (const { skillPath, subdir } of _scanSkillsDir(dir)) {
+    try {
+      const raw = fs.readFileSync(skillPath, 'utf8');
+      const fm = parseFrontmatter(raw);
+      const name = safeName(fm.meta.name || path.basename(skillPath, '.md'));
+      // Category source priority: subdirectory > frontmatter > 'general'
+      const cat = subdir ? normalizeCategory(subdir) : normalizeCategory(fm.meta.category);
+      // First non-blank paragraph of body = short description for catalog
+      const desc = String(fm.meta.description || fm.body || '').trim().split(/\n\s*\n/)[0]
+        .replace(/^#+\s*[^\n]*\n+/, '')
+        .replace(/\n+/g, ' ')
+        .slice(0, 240);
+      available[name] = {
+        name,
+        version: String(fm.meta.version || '1').trim(),
+        category: cat,
+        description: desc,
+        source: skillPath,
+        localPath: skillPath,
+        bytes: Buffer.byteLength(raw, 'utf8'),
+        active: false,  // global skills are never auto-active
+      };
+    } catch {}
   }
 
   // Overlay registry entries (they may have richer metadata)
@@ -548,6 +644,33 @@ function listSkillsGlobally() {
   }
 
   return Object.values(available).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+}
+
+// Group an array of skill entries by category. Returns Map<categoryId, skills[]>.
+function groupByCategory(skills) {
+  const groups = new Map();
+  for (const s of skills) {
+    const cat = s.category || 'general';
+    if (!groups.has(cat)) groups.set(cat, []);
+    groups.get(cat).push(s);
+  }
+  // Sort categories: known ones in CATEGORIES order, unknown after
+  const known = Object.keys(CATEGORIES);
+  const sorted = new Map();
+  for (const k of known) if (groups.has(k)) sorted.set(k, groups.get(k));
+  for (const [k, v] of groups) if (!sorted.has(k)) sorted.set(k, v);
+  return sorted;
+}
+
+// Search skills by substring in name or description (case-insensitive).
+function searchSkills(query, skills) {
+  const q = String(query || '').toLowerCase().trim();
+  if (!q) return [];
+  return skills.filter((s) =>
+    s.name.toLowerCase().includes(q) ||
+    String(s.description || '').toLowerCase().includes(q) ||
+    String(s.category || '').toLowerCase().includes(q)
+  );
 }
 
 function skillStatusGlobally() {
@@ -571,6 +694,7 @@ module.exports = {
   readActiveSkill,
   renderActiveSkillForPrompt,
   listSkills,
+  listAllSkills,
   unloadSkill,
   skillStatus,
   installSkillFromUrl,
@@ -582,4 +706,11 @@ module.exports = {
   unloadSkillGlobally,
   skillStatusGlobally,
   installSkillFromUrlGlobally,
+  // Category + search helpers
+  CATEGORIES,
+  knownCategories,
+  categoryInfo,
+  normalizeCategory,
+  groupByCategory,
+  searchSkills,
 };

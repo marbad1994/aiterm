@@ -1,14 +1,17 @@
-// Planner — detects complex multi-step requests and generates approval-first
-// execution plans. The agent only runs after the user sees and approves the plan.
+// Planner — handles approval-first execution for very large multi-day projects.
+// Most work is handled by:
+//   - Team PM agent: decomposes multi-agent tasks, runs agents in parallel/pipeline
+//   - Single agent: handles individual tasks directly
 //
-// Flow:
+// Planner only triggers for enormous projects (500+ chars with explicit scope signals).
+// Use '+' prefix to force planning, '!' prefix to skip it.
+//
+// Flow (rare):
 //   session receives input
-//     → shouldPlan(input)? yes
-//     → generatePlan(input) → plan JSON (via LLM)
-//     → formatPlan(plan)    → display string
-//     → user approves in session.js
-//     → plan saved to active-plan.json
-//     → execute each task with runAgent
+//     → shouldPlan(input)? only for massive projects
+//     → generatePlan(input) → plan JSON
+//     → user approves
+//     → execute tasks via agents
 
 const fs = require('fs');
 const path = require('path');
@@ -28,35 +31,53 @@ const SKIP_PLAN = [
   // Very short (one-liners under 30 chars almost never need a plan)
 ];
 
-// Action verbs that signal implementation work — these get a plan.
+// Action verbs that signal multi-step implementation work — these get a plan.
+// Excludes read-only queries and trivial modifications.
 const PLAN_SIGNALS = [
+  // Create/build work (substantial)
   /\b(?:add|create|build|implement|write|develop|generate)\b/i,
-  /\b(?:fix|debug|resolve|solve|repair|patch|correct|handle)\b/i,
-  /\b(?:refactor|rewrite|migrate|convert|update|upgrade|replace|rename|move)\b/i,
-  /\b(?:set\s+up|configure|install|integrate|deploy|connect|wire\s+up|hook\s+up)\b/i,
-  /\b(?:remove|delete|clean(?:\s+up)?|purge|strip|drop)\b/i,
-  /\b(?:test|spec|cover|mock|stub|end.to.end)\b/i,
-  /\b(?:document|comment|annotate|readme)\b/i,
-  /\b(?:make|change|modify|edit|adjust|tweak)\b/i,
-  /\b(?:optimize|improve|enhance|speed\s+up|reduce|minimize)\b/i,
-  /\b(?:extract|split|merge|combine|consolidate|reorganize|restructure)\b/i,
-  /\b(?:audit|review|inspect|analyse|analyze|scan)\b/i,
-  /\b(?:enable|disable|toggle|switch|turn\s+on|turn\s+off)\b/i,
+  // Debugging (substantial)
+  /\b(?:debug|resolve|solve|diagnose)\b/i,
+  // Refactoring (substantial, multi-file)
+  /\b(?:refactor|rewrite|migrate|restructure|reorganize)\b/i,
+  // Infrastructure (substantial)
+  /\b(?:set\s+up|configure|install|integrate|deploy|connect|wire\s+up)\b/i,
+  // Removal/cleanup (needs care)
+  /\b(?:remove|delete|purge)\b/i,
+  // Testing (substantial)
+  /\b(?:test|spec|coverage)\b/i,
 ];
 
-// shouldPlan returns true for any implementation/action task.
-// Prefix input with '!' to bypass planning for any request.
+// Multi-word phrases that indicate complexity (plan these if 60+ chars)
+const COMPLEXITY_SIGNALS = [
+  /\b(?:multiple|across)\s+(?:files|modules|components)\b/i,
+  /\bfrom\s+scratch\b/i,
+  /\b(?:end.to.end|integration)\b/i,
+  /\b(?:architecture|design|system)\b/i,
+  /\b(?:migration|upgrade|conversion)\b/i,
+];
+
+// shouldPlan returns true only for very large, multi-day projects.
+// The team PM agent handles planning for multi-agent tasks.
+// Single agents handle most work directly without explicit plans.
+// Prefix input with '!' to bypass, or '+' to force planning.
 function shouldPlan(input) {
   const text = String(input || '').trim();
   if (text.startsWith('!')) return false;          // explicit bypass
-  if (text.length < 30) return false;              // definitely too short
-  if (SKIP_PLAN.some((p) => p.test(text))) return false;  // question/conversational
+  if (text.startsWith('+')) return true;           // force plan
 
-  // Anything with an action signal gets a plan
-  if (PLAN_SIGNALS.some((p) => p.test(text))) return true;
+  // Skip conversational inputs
+  if (SKIP_PLAN.some((p) => p.test(text))) return false;
 
-  // Long inputs that don't match skip patterns almost always need a plan
-  return text.length >= 80;
+  // Only plan for enormous multi-day projects with explicit scope signals
+  // Most reasonable work goes to team PM (multi-agent) or single agent
+  const isLargeScope = text.length > 500 && (
+    /\b(?:build|create|implement).+(?:from\s+scratch|complete|entire)/i.test(text) ||
+    /\b(?:multi-day|week|sprint|phase)/i.test(text) ||
+    /\b(?:migrate|rewrite|refactor).*\b(?:entire|complete|whole|full|comprehensive)\b/i.test(text)
+  );
+
+  return isLargeScope;
 }
 
 // generatePlan calls the LLM to decompose the user's request into a plan.
@@ -65,26 +86,37 @@ async function generatePlan(input, { signal } = {}) {
   const client = makeClient('agent');
   const model = modelFor('agent');
 
-  const systemPrompt = `You are a planning assistant that decomposes complex tasks into ordered steps.
+  // Estimate complexity: longer requests with more context likely need more steps
+  const textLen = String(input).length;
+  const hasCode = /```|file:/.test(input);
+  const hasMultiFile = /multiple\s+files|several\s+files|across\s+files/i.test(input);
+
+  let maxSteps = 3;
+  if (textLen > 150) maxSteps = 4;
+  if (textLen > 300 || hasCode) maxSteps = 5;
+  if (hasMultiFile) maxSteps = 6;
+
+  const systemPrompt = `You are a planning assistant that decomposes tasks into ordered, minimal steps.
 Each step must be:
-- Atomic: completable in one focused work session
-- Specific: clear about what action is taken and why
+- Atomic: completable in one focused session
+- Specific: clear about what action and why
 - Ordered: each step builds on the previous
 
-Output ONLY valid JSON. No prose before or after the JSON block.`;
+Be concise. Avoid unnecessary steps. Group related work together.
+Output ONLY valid JSON. No prose.`;
 
-  const userPrompt = `Break this task into 5-10 ordered steps:
+  const userPrompt = `Break this task into ${Math.min(maxSteps, 6)} or fewer ordered steps (minimum 2):
 
 "${input}"
 
-Output format (JSON only, no other text):
+Output format (JSON only):
 {
   "title": "Short overall goal (under 60 chars)",
   "tasks": [
     {
       "id": "1",
       "title": "Short action title (under 10 words)",
-      "description": "What this step does and why it is needed"
+      "description": "What this step does and why"
     }
   ]
 }`;

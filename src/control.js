@@ -195,34 +195,113 @@ function loadSkill(name, global = false) {
   return 0;
 }
 
-function listSkills() {
+// listSkills(filter):
+//   filter undefined → grouped summary by category (one line per category)
+//   filter = '*'      → flat list of all skills with category tag
+//   filter = '<cat>'  → only skills in the given category
+function listSkills(filter) {
   const skills = require('./skills');
-  const workspace = skills.listSkills(process.cwd());
-  const global = skills.listSkillsGlobally();
+  const all = skills.listAllSkills(process.cwd());
 
-  if (!workspace.length && !global.length) {
+  if (!all.length) {
     process.stdout.write('shmakk: no skills loaded\n');
     return 0;
   }
 
-  process.stdout.write('shmakk skills\n');
-  process.stdout.write('--------------\n');
+  const grouped = skills.groupByCategory(all);
 
-  if (workspace.length) {
-    process.stdout.write('[workspace]\n');
-    for (const s of workspace) {
-      process.stdout.write(`- ${s.name}${s.version ? ` v${s.version}` : ''}${s.active ? ' [active]' : ''}\n`);
+  // Default: show category summary so the list isn't 80 lines.
+  if (!filter) {
+    process.stdout.write('shmakk skill categories\n');
+    process.stdout.write('───────────────────────\n');
+    for (const [cat, list] of grouped) {
+      const info = skills.categoryInfo(cat);
+      const label = info ? info.label : cat;
+      const blurb = info ? info.blurb : '';
+      process.stdout.write(`  ${cat.padEnd(13)} ${String(list.length).padStart(3)} skills   ${blurb}\n`);
     }
+    process.stdout.write(`\nTotal: ${all.length} skills across ${grouped.size} categories.\n`);
+    process.stdout.write('Use "list skills <category>" to expand, or "find skill <query>" to search.\n');
+    return 0;
   }
 
-  if (global.length) {
-    if (workspace.length) process.stdout.write('\n');
-    process.stdout.write('[global]\n');
-    for (const s of global) {
-      process.stdout.write(`- ${s.name}${s.version ? ` v${s.version}` : ''}${s.active ? ' [active]' : ''}\n`);
+  // Show a single category
+  const wanted = String(filter).toLowerCase().trim();
+  if (wanted === '*' || wanted === 'all') {
+    process.stdout.write(`shmakk: all ${all.length} skills\n`);
+    process.stdout.write('─────────────────\n');
+    for (const [cat, list] of grouped) {
+      const info = skills.categoryInfo(cat);
+      const label = info ? info.label : cat;
+      process.stdout.write(`\n[${label}]\n`);
+      for (const s of list) {
+        const tag = s.active ? ' [active]' : '';
+        process.stdout.write(`  ${s.name.padEnd(22)} ${s.scope === 'workspace' ? '(ws)' : '    '}${tag}\n`);
+      }
     }
+    return 0;
   }
 
+  const list = grouped.get(wanted);
+  if (!list || !list.length) {
+    process.stdout.write(`shmakk: no skills in category "${wanted}"\n`);
+    process.stdout.write('\nAvailable categories:\n');
+    for (const [cat, l] of grouped) {
+      process.stdout.write(`  ${cat.padEnd(13)} ${l.length} skills\n`);
+    }
+    return 1;
+  }
+
+  const info = skills.categoryInfo(wanted);
+  const label = info ? info.label : wanted;
+  process.stdout.write(`shmakk skills · ${label} (${list.length})\n`);
+  if (info && info.blurb) process.stdout.write(`${info.blurb}\n`);
+  process.stdout.write('─────────────────────\n');
+  for (const s of list) {
+    const tag = s.active ? ' [active]' : '';
+    const scope = s.scope === 'workspace' ? ' (workspace)' : '';
+    process.stdout.write(`  ${s.name.padEnd(22)} v${s.version || '1'}${scope}${tag}\n`);
+    if (s.description) {
+      const desc = s.description.length > 100 ? s.description.slice(0, 100) + '…' : s.description;
+      process.stdout.write(`    ${desc}\n`);
+    }
+  }
+  return 0;
+}
+
+function listSkillCategories() {
+  const skills = require('./skills');
+  const all = skills.listAllSkills(process.cwd());
+  const grouped = skills.groupByCategory(all);
+  process.stdout.write('shmakk skill categories\n');
+  process.stdout.write('───────────────────────\n');
+  for (const [cat, list] of grouped) {
+    const info = skills.categoryInfo(cat);
+    const label = info ? info.label : cat;
+    const blurb = info ? info.blurb : '';
+    process.stdout.write(`  ${cat.padEnd(13)} ${String(list.length).padStart(3)} skills   ${blurb}\n`);
+  }
+  process.stdout.write(`\nTotal: ${all.length} skills across ${grouped.size} categories.\n`);
+  return 0;
+}
+
+function findSkills(query) {
+  const skills = require('./skills');
+  const all = skills.listAllSkills(process.cwd());
+  const hits = skills.searchSkills(query, all);
+  if (!hits.length) {
+    process.stdout.write(`shmakk: no skills match "${query}"\n`);
+    return 1;
+  }
+  process.stdout.write(`shmakk: ${hits.length} skill${hits.length === 1 ? '' : 's'} matching "${query}"\n`);
+  process.stdout.write('─────────────────────────\n');
+  for (const s of hits) {
+    process.stdout.write(`  ${s.name.padEnd(22)} [${s.category || 'general'}] v${s.version || '1'}\n`);
+    if (s.description) {
+      const desc = s.description.length > 120 ? s.description.slice(0, 120) + '…' : s.description;
+      process.stdout.write(`    ${desc}\n`);
+    }
+  }
   return 0;
 }
 
@@ -360,4 +439,4 @@ function mcpStatus() {
   return 0;
 }
 
-module.exports = { status, exitParent, restartParent, resetConversation, setProfileAndRestart, profileSignalPath, resumeStatus, compactContext, stats, loadSkill, listSkills, skillStatus, unloadSkill, installSkill, showPlan, mcpStatus };
+module.exports = { status, exitParent, restartParent, resetConversation, setProfileAndRestart, profileSignalPath, resumeStatus, compactContext, stats, loadSkill, listSkills, listSkillCategories, findSkills, skillStatus, unloadSkill, installSkill, showPlan, mcpStatus };

@@ -269,10 +269,13 @@ Approach:
   },
 };
 
-// route analyzes the input and returns a specialist config.
+const { classifyTask } = require('./taskClassifier');
+
+// route analyzes the input and returns a specialist config + task classification.
 // If no specialist matches, returns the general config (no hint, use opts.profile).
-function route(input) {
+function route(input, messages = []) {
   const text = String(input || '');
+  const task = classifyTask(messages);
 
   for (const [name, spec] of Object.entries(SPECIALISTS)) {
     if (spec.patterns.some((p) => p.test(text))) {
@@ -281,6 +284,8 @@ function route(input) {
         profile: spec.profile,
         specialistHint: spec.hint,
         indicator: spec.indicator,
+        taskType: task.taskType,
+        taskProfile: task,
       };
     }
   }
@@ -290,6 +295,8 @@ function route(input) {
     profile: null,
     specialistHint: null,
     indicator: null,
+    taskType: task.taskType,
+    taskProfile: task,
   };
 }
 

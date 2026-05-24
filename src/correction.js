@@ -91,6 +91,22 @@ function isStaticToken(tok) {
     || tok.startsWith('--');
 }
 
+// Apply the case pattern from `original` to `corrected`.
+//   "Gti"  + "git" → "Git"   (first char uppercase preserved)
+//   "GTI"  + "git" → "GIT"   (all uppercase preserved)
+//   "gti"  + "git" → "git"   (no change)
+//   "gTi"  + "git" → "git"   (mixed-case in middle isn't preserved; uncommon)
+function preserveCase(original, corrected) {
+  if (!original || !corrected) return corrected;
+  // All uppercase original → all uppercase corrected
+  if (/^[A-Z]+$/.test(original)) return corrected.toUpperCase();
+  // First char uppercase → capitalize first char of corrected
+  if (/^[A-Z]/.test(original)) {
+    return corrected.charAt(0).toUpperCase() + corrected.slice(1);
+  }
+  return corrected;
+}
+
 async function correct({ input, glossary, signal: _unused }) {
   // Pre-filter natural language
   if (looksLikeNaturalLanguage(input)) {
@@ -111,14 +127,16 @@ async function correct({ input, glossary, signal: _unused }) {
   // ── Token 0: correct the command name ──
   const cmd = tokens[0];
   const allCommandNames = Object.keys(glossary.commands);
-  const correctedCmd = bestMatch(cmd, allCommandNames, freqMap);
+  // Match against lowercase form so "Gti" still finds "git" in the glossary,
+  // then re-apply the user's original casing to the corrected result.
+  const correctedCmd = bestMatch(cmd.toLowerCase(), allCommandNames, freqMap);
 
   // No close match for the command — pass through to task agent
   if (!correctedCmd) {
     return { category: 'not_a_correction', proposed: null, safety: 'uncertain', reason: 'no close command match' };
   }
 
-  const fixedTokens = [correctedCmd];
+  const fixedTokens = [preserveCase(cmd, correctedCmd)];
   const cmdEntry = glossary.commands[correctedCmd];
   const subcommands = cmdEntry?.subcommands || [];
 
@@ -129,15 +147,15 @@ async function correct({ input, glossary, signal: _unused }) {
       fixedTokens.push(tok);
       continue;
     }
-    // Already a known subcommand? Keep it.
-    if (subcommands.includes(tok)) {
+    // Already a known subcommand? Keep it (case-insensitive match).
+    if (subcommands.includes(tok) || subcommands.includes(tok.toLowerCase())) {
       fixedTokens.push(tok);
       continue;
     }
-    // Try to match against subcommands
-    const bestSub = bestMatch(tok, subcommands, freqMap);
+    // Try to match against subcommands (lowercase compare, preserve original case)
+    const bestSub = bestMatch(tok.toLowerCase(), subcommands, freqMap);
     if (bestSub) {
-      fixedTokens.push(bestSub);
+      fixedTokens.push(preserveCase(tok, bestSub));
     } else {
       fixedTokens.push(tok); // keep original
     }

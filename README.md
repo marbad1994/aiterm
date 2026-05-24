@@ -95,13 +95,17 @@ shmakk --profile-set deep
 
 ## Skills
 
-Skills are task-specific markdown files loaded into the agent's context on demand. The `skills/` directory at the repo root contains 24 built-in skills covering areas like `code-review`, `research`, `sysmon`, `logs`, and more.
+Skills are task-specific markdown files loaded into the agent's context on demand. The `skills/` directory contains 32 built-in skills covering areas like `code-review`, `research`, `backend`, `devops`, `sysmon`, `logs`, and more.
 
 ```bash
 shmakk --install-skill <name>   # install a skill from the built-in library
 shmakk --load-skill <name>      # load an installed skill for this session
 shmakk --list-skills            # show currently loaded skills
 ```
+
+## Coordinator & Multi-step workflows
+
+The coordinator system enables complex, multi-step task execution with plan-first workflows. When tackling large projects or intricate tasks, shmakk breaks them into manageable steps, validates each stage, and maintains context across the entire workflow.
 
 ## Environment variables
 

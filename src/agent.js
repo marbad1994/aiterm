@@ -106,7 +106,7 @@ function highlightCodeBlocks(text, enabled = true) {
 
 // ── Main agent entry point ──────────────────────────────────────────────────
 
-async function runAgent({ input, roots, glossary, confirmTool, write, signal, history = [], profile = 'balanced', colors = true, voiceMode = false, specialistHint = null, mcpManager = null }) {
+async function runAgent({ input, roots, glossary, confirmTool, write, signal, history = [], profile = 'balanced', colors = true, voiceMode = false, specialistHint = null, mcpManager = null, requireToolUse = false }) {
   // roots: array of allowed workspace roots (first is the primary cwd).
   // history: prior conversation turns (assistant/user/tool). System prompt
   // is rebuilt fresh each call so the current cwd is always accurate.
@@ -240,9 +240,13 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
     const allTools = mcpManager ? [...TOOLS, ...mcpManager.getToolDefinitions()] : TOOLS;
     let stream;
     try {
+      // First iteration only: optionally force a tool call so the model can't
+      // silently respond with text. After the first round any further calls
+      // can be either tool or text.
+      const toolChoiceForThisIter = (requireToolUse && i === 0) ? 'required' : 'auto';
       stream = await client.chat.completions.create({
         model: modelFor('agent'),
-        messages, tools: allTools, tool_choice: 'auto',
+        messages, tools: allTools, tool_choice: toolChoiceForThisIter,
         temperature: 0, stream: true,
       }, { signal });
     } catch (e) {

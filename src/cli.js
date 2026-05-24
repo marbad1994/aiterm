@@ -192,6 +192,7 @@ Environment:
   SHMAKK_API_KEY                  API key
   SHMAKK_MODEL                    Default model
   SHMAKK_HEADERS                  Comma-separated extra headers (k=v,k=v)
+  SHMAKK_REGISTRY                 Comma-separated model registry filter (for makkorch)
 `;
 
 module.exports = { parseArgs, HELP };

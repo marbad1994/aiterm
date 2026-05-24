@@ -1,6 +1,7 @@
 const { parseArgs, HELP } = require('./cli');
 const { normalizeProfile, resolveProfile } = require('./profiles');
-const { applyEndpoint } = require('./endpoints');
+const { applyEndpoint, getCurrentEndpoint, getCurrentEndpointName } = require('./endpoints');
+const { ensureMakkorch } = require('./llm');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -39,6 +40,8 @@ async function main() {
     if (!applyEndpoint(opts.endpoint, opts.workspace || process.cwd())) {
       process.stderr.write(`[shmakk] endpoint "${opts.endpoint}" not found in ${configDir}\n`);
     }
+    // Auto-start makkorch if needed
+    await ensureMakkorch();
   }
 
   if (opts.colors !== null) {
@@ -68,6 +71,9 @@ async function main() {
 
   if (opts.printConfig) {
     const profile = resolveProfile(opts.profile || process.env.SHMAKK_PROFILE);
+    const activeEndpoint = getCurrentEndpoint();
+    const activeEndpointName = getCurrentEndpointName();
+
     const cfg = {
       review: opts.review,
       yesFiles: opts.yesFiles,
@@ -76,9 +82,11 @@ async function main() {
       workspace: opts.workspace || process.cwd(),
       shell: process.env.SHELL,
       term: process.env.TERM,
-      baseUrl: process.env.SHMAKK_BASE_URL || null,
-      model: process.env.SHMAKK_MODEL || null,
-      endpoint: opts.endpoint || null,
+      endpoint: activeEndpointName || opts.endpoint || null,
+      baseUrl: activeEndpoint?.base_url || process.env.SHMAKK_BASE_URL || null,
+      apiKey: activeEndpoint?.api_key ? (activeEndpoint.api_key.slice(0, 8) + '...' + activeEndpoint.api_key.slice(-4)) : null,
+      model: activeEndpoint?.model || process.env.SHMAKK_MODEL || null,
+      registry: activeEndpoint?.registry || process.env.SHMAKK_REGISTRY || null,
       profile: profile.name,
       colors: opts.colors,
       stt: opts.stt,

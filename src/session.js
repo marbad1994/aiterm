@@ -383,7 +383,7 @@ async function runOneSession(opts, registerSession) {
       await withAI(async (ctrl) => {
         out('\x1b[36m[shmakk voice→task] (Ctrl-C to interrupt)\x1b[0m\r\n');
         try {
-          const voiceRouting = routeToSpecialist(text);
+          const voiceRouting = routeToSpecialist(text, [...history, { role: 'user', content: text }]);
           const updated = await runAgent({
             input: text, roots: currentRoots(), glossary,
             confirmTool: makeToolConfirm(opts, ask, out, () => ctrl.abort()),
@@ -752,7 +752,7 @@ async function runOneSession(opts, registerSession) {
       } else {
         discardPending();
       }
-      const routing = routeToSpecialist(cmd);
+      const routing = routeToSpecialist(cmd, [...history, { role: 'user', content: cmd }]);
       const agentProfile = opts.profile || routing.profile || 'balanced';
       const agentOpts = {
         roots: currentRoots(), glossary,
@@ -778,6 +778,8 @@ async function runOneSession(opts, registerSession) {
             write: out,
             signal: ctrl.signal,
             mcpManager,
+            taskProfile: routing.taskProfile,
+            taskType: routing.taskType,
           });
         } catch (e) {
           if (isAbortError(e)) throw e;

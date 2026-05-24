@@ -15,9 +15,87 @@
 // runTeam() returns true if team handled the task, false if PM declined
 // (caller should fall through to single-agent execution).
 
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 const { makeClient, modelFor, isConfigured } = require('./llm');
 const { runAgent } = require('./agent');
 const { matchWorkflow, expandWorkflow } = require('./workflows');
+
+// Role → preferred skill name mapping. Most agents can be powered by a real
+// skill file from ~/.config/shmakk/skills/. When a skill file exists, its
+// body replaces the hardcoded AGENT_ROSTER hint — so the agent specializes
+// based on the actual skill content rather than the role's static prompt.
+//
+// If no skill is found, runSubAgent falls back to the AGENT_ROSTER hint
+// for that role (legacy behavior). This guarantees existing workflows keep
+// working even before all skill files are present.
+const ROLE_TO_SKILL = {
+  frontend: 'frontend',
+  backend: 'backend',
+  ux: 'ux-ui',
+  design: 'design',
+  mobile: 'mobile',
+  web: 'web',
+  devops: 'devops',
+  security: 'security-scan',  // canonical security workflow
+  testing: 'test-coverage',
+  code: 'code-review',
+  docs: 'documentation-writer',   // from imported skills
+  research: 'deep-research',      // from imported skills
+  marketing: 'marketing',
+  system: 'sysmon',
+};
+
+// Find and read a skill file by name. Returns { content, profile } or null.
+// Searches workspace skills first, then global category subdirectories.
+function loadSkillContent(skillName, roots) {
+  if (!skillName) return null;
+  const home = os.homedir();
+  const cwd = roots && roots[0];
+  const globalRoot = path.join(home, '.config', 'shmakk', 'skills');
+  const candidates = [];
+
+  if (cwd) {
+    candidates.push(path.join(cwd, '.shmakk', 'skills', `${skillName}.md`));
+  }
+  // Flat layout (legacy)
+  candidates.push(path.join(globalRoot, `${skillName}.md`));
+  // All category subdirectories (new layout)
+  try {
+    if (fs.existsSync(globalRoot)) {
+      for (const entry of fs.readdirSync(globalRoot, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          candidates.push(path.join(globalRoot, entry.name, `${skillName}.md`));
+        }
+      }
+    }
+  } catch {}
+  // Package-bundled fallback
+  candidates.push(path.join(__dirname, '..', 'skills', `${skillName}.md`));
+
+  for (const p of candidates) {
+    try {
+      if (!fs.existsSync(p)) continue;
+      const raw = fs.readFileSync(p, 'utf8');
+      const fmMatch = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/m.exec(raw);
+      let body = raw, meta = {};
+      if (fmMatch) {
+        body = fmMatch[2];
+        for (const line of fmMatch[1].split(/\r?\n/)) {
+          const m = /^([a-zA-Z0-9_-]+)\s*:\s*(.+)$/.exec(line.trim());
+          if (m) meta[m[1].toLowerCase()] = m[2].trim();
+        }
+      }
+      return {
+        content: body.trim(),
+        profile: meta.profile || null,
+        source: p,
+      };
+    } catch {}
+  }
+  return null;
+}
 
 // ── Specialist catalog ────────────────────────────────────────────────────────
 
@@ -200,10 +278,45 @@ Guidelines:
 
 // ── PM prompt ────────────────────────────────────────────────────────────────
 
-const PM_PLAN_PROMPT = `You are the Project Manager for shmakk, an AI terminal assistant.
+// Build a compact catalog of skill names by category, used to inform the PM
+// of what specialist knowledge is available. Avoids listing 397 skills —
+// shows just the named roles + how many extra specialized skills exist per
+// category so the PM can opt into a niche one via `skill: '<name>'`.
+function buildSkillCatalogHint() {
+  try {
+    const skills = require('./skills');
+    const all = skills.listAllSkills();
+    const byCat = new Map();
+    for (const s of all) {
+      const c = s.category || 'general';
+      if (!byCat.has(c)) byCat.set(c, []);
+      byCat.get(c).push(s.name);
+    }
+    const lines = [];
+    for (const [cat, names] of byCat) {
+      // Show first ~6 skill names + count
+      const shown = names.slice(0, 6).join(', ');
+      const extra = names.length > 6 ? ` (+ ${names.length - 6} more)` : '';
+      lines.push(`  ${cat.padEnd(13)} ${shown}${extra}`);
+    }
+    return lines.join('\n');
+  } catch {
+    return '';
+  }
+}
+
+function buildPmPlanPrompt() {
+  const catalog = buildSkillCatalogHint();
+  return `You are the Project Manager for shmakk, an AI terminal assistant.
 Your job: analyze a task, pick the right execution topology, and assemble a specialist team.
 
-Available specialists: ${Object.keys(AGENT_ROSTER).join(', ')}
+Standard roles available: ${Object.keys(AGENT_ROSTER).join(', ')}
+
+Each role is automatically backed by the matching skill file from the skill catalog.
+You can ALSO assign an agent a more specialized skill from the catalog by setting "skill":
+
+Skill catalog (by category — names you can use in the "skill" field):
+${catalog}
 
 Topologies:
 - "parallel"  — agents are independent, run simultaneously, results synthesized at the end. Use when subtasks don't depend on each other (e.g., security audit covering multiple vectors).
@@ -217,6 +330,7 @@ Respond with ONLY a JSON object — no markdown, no explanation, no code fences:
   "agents": [
     {
       "role": "frontend",
+      "skill": "frontend",        // optional — defaults from role; pick a specific skill name from catalog above for niche tasks
       "task": "specific, concrete task for this agent (1–2 sentences)",
       "fileScope": "src/components/, src/styles/"
     }
@@ -232,7 +346,14 @@ Planning rules:
 - For "parallel": fileScope must be non-overlapping — agents should not conflict over the same files.
 - For "pipeline": agents run in the order you list them. The first agent's output becomes context for the second, etc. Order matters.
 - Each agent's task must be specific and actionable. "Build the frontend" is too vague; "Build the login form and dashboard layout in src/components/auth/ using the existing Tailwind config" is correct.
+- Prefer the "skill" field when a specific catalog skill matches the task better than the generic role. E.g. role:"system", skill:"arch-linux-triage" for Arch-specific debugging; role:"security", skill:"mcp-security-audit" for MCP config review.
+- fileScope MUST be concrete paths or directories. NEVER use "." or "" or the project root — that grants every agent ownership of the entire codebase and causes write conflicts. For infrastructure agents that touch root-level files, list the specific files (e.g. "docker-compose.yml, .env.example, Dockerfile.frontend, nginx.conf").
+- Every agent will be EXECUTING file writes, not planning. Write tasks like "Create X in path Y with content Z" — assume the agent will call write_file and the files must exist after.
 - A task that only touches code quality, tests, or docs for an existing feature is a single-agent task.`;
+}
+
+// Backward compat: older code may reference PM_PLAN_PROMPT
+const PM_PLAN_PROMPT = buildPmPlanPrompt();
 
 // ── Multi-domain heuristic ────────────────────────────────────────────────────
 
@@ -271,7 +392,7 @@ async function planTeam(input, client, roots, signal) {
       stream: false,
       tool_choice: 'none',
       messages: [
-        { role: 'system', content: PM_PLAN_PROMPT },
+        { role: 'system', content: buildPmPlanPrompt() },
         { role: 'user', content: `Workspace: ${roots.join(', ')}\n\nTask: ${input}` },
       ],
     }, { signal });
@@ -291,11 +412,27 @@ async function runSubAgent({
   role, task, fileScope, overallInput, roots, signal, mcpManager,
   handoffs = null,     // [{ role, output }] — outputs from prior pipeline agents
   topology = 'parallel',
+  skill = null,        // optional: explicit skill name override (PM can pick any)
 }) {
+  // Step 1: figure out which skill file to load.
+  // Explicit `skill` param wins; otherwise map role → skill via ROLE_TO_SKILL;
+  // otherwise try the role name as a skill name directly.
+  const wantedSkill = skill || ROLE_TO_SKILL[role] || role;
+
+  // Step 2: try to load the skill content from the catalog.
+  const loaded = loadSkillContent(wantedSkill, roots);
+
+  // Step 3: fall back to AGENT_ROSTER if no skill file found.
   const roster = AGENT_ROSTER[role];
-  if (!roster) {
-    return { role, task, output: '', toolCount: 0, error: `Unknown role: ${role}` };
+  if (!loaded && !roster) {
+    return { role, task, output: '', toolCount: 0, error: `No skill or roster entry for role: ${role}` };
   }
+
+  // Specialist hint = real skill body if available, else legacy roster hint
+  const specialistHint = loaded
+    ? `Active specialist skill: ${wantedSkill} (loaded from ${loaded.source})\n\n${loaded.content}`
+    : roster.hint;
+  const profile = (loaded && loaded.profile) || (roster && roster.profile) || 'balanced';
 
   const lines = [];
   const bufWrite = (s) => lines.push(s);
@@ -324,34 +461,100 @@ async function runSubAgent({
   const subInput = [
     `You are the ${role} specialist on a multi-agent project team.`,
     ``,
-    `Overall project task: ${overallInput}`,
+    `## YOUR ASSIGNMENT`,
+    task,
+    fileScope ? `\nFile scope: stay within these paths → ${fileScope}` : '',
     ``,
-    `Your specific assignment: ${task}`,
-    fileScope ? `\nYour file scope (stay within these paths): ${fileScope}` : '',
+    `## CRITICAL — THIS IS AN EXECUTION TASK, NOT A PLANNING TASK`,
+    `You MUST take action via tool calls. Files must actually exist on disk when you finish.`,
+    `Required tool usage:`,
+    `  • make_dir   — create any directories needed under your file scope`,
+    `  • write_file — create new files with complete, working content`,
+    `  • edit_file  — modify existing files surgically`,
+    `  • run        — execute setup commands ONLY when explicitly requested`,
+    `If your final reply contains ZERO tool calls, your work is INCOMPLETE.`,
+    `Do not describe what files should exist — create them with write_file.`,
+    `Do not paste code blocks for the user to copy — write them to disk.`,
+    ``,
+    `## CONTEXT`,
+    `Overall project task: ${overallInput}`,
     handoffBlock,
     ``,
-    `${teamDescription}`,
-    `Be concrete: produce actual code, content, or configs — not plans or descriptions.`,
+    teamDescription,
+    ``,
+    `## SUCCESS CRITERIA`,
+    `1. Every file your assignment requires actually exists on the filesystem.`,
+    `2. File contents are complete and runnable (no "TODO", no placeholders).`,
+    `3. At the end, list the absolute paths of every file you created or modified.`,
   ].filter(Boolean).join('\n');
 
-  try {
+  // hintOverride lets us strip the analysis-biased skill body on retry.
+  // requireTool forces tool_choice: 'required' on the first iteration so
+  // the model cannot respond with text only.
+  const runOnce = async (effectiveInput, { hintOverride = undefined, requireTool = false } = {}) => {
+    lines.length = 0;
+    toolCount = 0;
     await runAgent({
-      input: subInput,
+      input: effectiveInput,
       roots,
       glossary: null,
       confirmTool,
       write: bufWrite,
       signal,
       history: [],
-      profile: roster.profile,
+      profile,
       colors: false,
       voiceMode: false,
-      specialistHint: roster.hint,
+      specialistHint: hintOverride !== undefined ? hintOverride : specialistHint,
       mcpManager,
+      requireToolUse: requireTool,
     });
-    return { role, task, output: lines.join(''), toolCount, error: null };
+  };
+
+  try {
+    await runOnce(subInput);
+
+    // Retry once if the agent produced 0 tool calls — it likely got stuck in
+    // "describe" mode. Two changes for the retry:
+    //   1. Strip the procedural skill body (it biases toward analysis-first)
+    //      and replace with a minimal action-only hint.
+    //   2. Force tool use via requireToolUse so the model can't escape into prose.
+    if (toolCount === 0) {
+      const firstOutput = stripAnsi(lines.join('')).trim().slice(0, 4000);
+      const retryHint = `You are the ${role} specialist (skill methodology already absorbed). EXECUTION MODE — produce file changes via write_file / make_dir / edit_file only. No analysis. No prose. No code fences. Just tool calls.`;
+      const retryInput = [
+        `Your previous reply was text only — no tool calls. That is not acceptable; convert your description into real files now.`,
+        ``,
+        `## ASSIGNMENT (unchanged)`,
+        task,
+        fileScope ? `File scope: ${fileScope}` : '',
+        ``,
+        `## YOUR PRIOR DESCRIPTION (turn each described file into write_file calls)`,
+        firstOutput || '(empty)',
+        ``,
+        `## RULES`,
+        `- Use make_dir for any directory that does not exist yet.`,
+        `- Use write_file for every file you described above — full contents, not placeholders.`,
+        `- Do NOT respond with prose. The next message must contain tool calls.`,
+      ].filter(Boolean).join('\n');
+      await runOnce(retryInput, { hintOverride: retryHint, requireTool: true });
+    }
+
+    return {
+      role, task,
+      output: lines.join(''),
+      toolCount,
+      error: toolCount === 0 ? 'no file changes (agent produced text only, twice)' : null,
+      skillUsed: loaded ? wantedSkill : null,
+    };
   } catch (e) {
-    return { role, task, output: lines.join(''), toolCount, error: e.message };
+    return {
+      role, task,
+      output: lines.join(''),
+      toolCount,
+      error: e.message,
+      skillUsed: loaded ? wantedSkill : null,
+    };
   }
 }
 
@@ -413,6 +616,7 @@ async function runPipelineAgents({ agents, overallInput, roots, signal, mcpManag
 
     const result = await runSubAgent({
       role: a.role,
+      skill: a.skill,            // optional explicit skill override
       task: a.task,
       fileScope: a.fileScope,
       overallInput,
@@ -425,9 +629,10 @@ async function runPipelineAgents({ agents, overallInput, roots, signal, mcpManag
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     const icon = result.error ? '\x1b[31m✗\x1b[0m' : '\x1b[32m✓\x1b[0m';
+    const skillTag = result.skillUsed ? ` · \x1b[2mskill: ${result.skillUsed}\x1b[0m` : '';
     const info = result.error
       ? result.error
-      : `done · ${result.toolCount} tool calls · ${elapsed}s`;
+      : `done · ${result.toolCount} tool calls · ${elapsed}s${skillTag}`;
     write(`\x1b[36m[shmakk · ${result.role}]\x1b[0m ${icon} ${info}\r\n`);
 
     results.push(result);
@@ -452,6 +657,7 @@ async function runParallelAgents({ agents, overallInput, roots, signal, mcpManag
     agents.map(async (a) => {
       const result = await runSubAgent({
         role: a.role,
+        skill: a.skill,            // optional explicit skill override
         task: a.task,
         fileScope: a.fileScope,
         overallInput,
@@ -462,9 +668,10 @@ async function runParallelAgents({ agents, overallInput, roots, signal, mcpManag
       });
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       const icon = result.error ? '\x1b[31m✗\x1b[0m' : '\x1b[32m✓\x1b[0m';
+      const skillTag = result.skillUsed ? ` · \x1b[2mskill: ${result.skillUsed}\x1b[0m` : '';
       const info = result.error
         ? result.error
-        : `done · ${result.toolCount} tool calls · ${elapsed}s`;
+        : `done · ${result.toolCount} tool calls · ${elapsed}s${skillTag}`;
       write(`\x1b[36m[shmakk · ${result.role}]\x1b[0m ${icon} ${info}\r\n`);
       return result;
     }),

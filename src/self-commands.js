@@ -27,9 +27,37 @@ const SELF_COMMANDS = [
   },
 
   // ── Skills ──
+  // Default "list skills" shows category summary, not the 80-item flat list.
   {
     patterns: [/^(?:list|show|my)\s+skills?$/i, /^what\s+skills?\s+(?:do\s+I\s+have|are\s+(?:loaded|available|there))[\s?]*$/i, /^skills?$/i],
     action: 'list-skills',
+  },
+  // "list skills <category>" or "list skills all/*"
+  {
+    patterns: [
+      /^(?:list|show)\s+skills?\s+(\S+)$/i,
+      /^skills?\s+in\s+(\S+)$/i,
+    ],
+    action: 'list-skills-cat',
+    needsArg: true,
+  },
+  // "list skill categories" — show all categories with counts
+  {
+    patterns: [
+      /^(?:list|show)\s+skills?\s+categor(?:y|ies)$/i,
+      /^skills?\s+categor(?:y|ies)$/i,
+      /^categor(?:y|ies)$/i,
+    ],
+    action: 'list-skill-categories',
+  },
+  // "find skill <query>" — full-text-ish search
+  {
+    patterns: [
+      /^find\s+skills?\s+(.+)$/i,
+      /^search\s+skills?\s+(.+)$/i,
+    ],
+    action: 'find-skill',
+    needsArg: true,
   },
   {
     patterns: [/^skill\s+status$/i],
@@ -196,6 +224,23 @@ const SELF_COMMANDS = [
     needsArg: true,
   },
 
+  // ── Endpoint switching ──
+  {
+    patterns: [
+      /^(?:list|show)\s+endpoints?$/i,
+      /^endpoints?$/i,
+    ],
+    action: 'list-endpoints',
+  },
+  {
+    patterns: [
+      /^(?:use|switch\s+to|set)\s+endpoint\s+(\S+)$/i,
+      /^use\s+(\S+)$/i,
+    ],
+    action: 'use-endpoint',
+    needsArg: true,
+  },
+
   // ── Review mode ──
   {
     patterns: [
@@ -348,7 +393,10 @@ function executeSelfCommand(match, write, ctx = {}) {
     }
 
     // ── Skills ──
-    case 'list-skills':   ctl.listSkills(); break;
+    case 'list-skills':         ctl.listSkills(); break;
+    case 'list-skills-cat':     ctl.listSkills(match.arg); break;
+    case 'list-skill-categories': ctl.listSkillCategories(); break;
+    case 'find-skill':          ctl.findSkills(match.arg); break;
     case 'skill-status':  ctl.skillStatus(); break;
     case 'load-skill':    ctl.loadSkill(match.arg); break;
     case 'unload-skill':  ctl.unloadSkill(match.arg); break;
@@ -580,6 +628,36 @@ function executeSelfCommand(match, write, ctx = {}) {
       const masked = key.slice(0, 8) + '...' + key.slice(-4);
       write(`[shmakk] API key → ${masked}\r\n`);
       write('[shmakk] takes effect on the next agent invocation\r\n');
+      break;
+    }
+
+    // ── Endpoints ──
+    case 'list-endpoints': {
+      const { listEndpoints, getCurrentEndpointName } = require('./endpoints');
+      const list = listEndpoints(opts.workspace || process.cwd());
+      const current = getCurrentEndpointName();
+      if (!list.length) {
+        write('[shmakk] no endpoints configured in ~/.config/shmakk/endpoints.js\r\n');
+        break;
+      }
+      write('[shmakk] available endpoints:\r\n');
+      for (const ep of list) {
+        const marker = ep === current ? ' \x1b[1m*\x1b[0m ' : '   ';
+        write(`${marker}${ep}\r\n`);
+      }
+      break;
+    }
+
+    case 'use-endpoint': {
+      const { applyEndpoint, getCurrentEndpointName } = require('./endpoints');
+      const endpointName = match.arg;
+      const ok = applyEndpoint(endpointName, opts.workspace || process.cwd());
+      if (!ok) {
+        write(`\x1b[33m[shmakk] endpoint "${endpointName}" not found\x1b[0m\r\n`);
+        break;
+      }
+      write(`[shmakk] switched to endpoint: \x1b[1m${endpointName}\x1b[0m\r\n`);
+      write('[shmakk] takes effect immediately on the next agent invocation\r\n');
       break;
     }
 
