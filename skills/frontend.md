@@ -1,6 +1,7 @@
 ---
 name: frontend
 version: 1
+category: frontend
 ---
 
 # Frontend Engineering

@@ -1,6 +1,7 @@
 ---
 name: code-review
 version: 2
+category: dev
 ---
 
 # Code Review

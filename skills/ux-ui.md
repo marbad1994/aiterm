@@ -1,6 +1,7 @@
 ---
 name: ux-ui
 version: 1
+category: design
 ---
 
 # UX/UI Design

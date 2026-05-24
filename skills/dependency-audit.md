@@ -1,6 +1,7 @@
 ---
 name: dependency-audit
 version: 1
+category: security
 ---
 
 # Dependency Audit

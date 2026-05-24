@@ -1,6 +1,7 @@
 ---
 name: mobile
 version: 1
+category: mobile
 ---
 
 # Mobile Development

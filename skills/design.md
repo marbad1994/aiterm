@@ -1,6 +1,7 @@
 ---
 name: design
 version: 1
+category: design
 ---
 
 # Visual Design & Design Systems

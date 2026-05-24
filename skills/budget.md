@@ -1,6 +1,7 @@
 ---
 name: budget
 version: 1
+category: business
 ---
 
 # Budget & Financial Analysis

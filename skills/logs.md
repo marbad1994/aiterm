@@ -1,6 +1,7 @@
 ---
 name: logs
 version: 1
+category: system
 ---
 
 # Log Analysis

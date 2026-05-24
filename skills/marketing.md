@@ -1,6 +1,7 @@
 ---
 name: marketing
 version: 1
+category: business
 ---
 
 # Marketing & Growth

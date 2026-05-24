@@ -1,6 +1,7 @@
 ---
 name: sysmon
 version: 1
+category: system
 ---
 
 # System Monitoring & Diagnostics

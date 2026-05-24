@@ -1,6 +1,7 @@
 ---
 name: compliance
 version: 1
+category: business
 ---
 
 # Privacy & Compliance Review

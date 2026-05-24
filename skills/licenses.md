@@ -1,6 +1,7 @@
 ---
 name: licenses
 version: 1
+category: business
 ---
 
 # Software License Analysis

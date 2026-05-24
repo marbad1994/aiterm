@@ -1,6 +1,7 @@
 ---
 name: task-management
 version: 1
+category: productivity
 ---
 
 # Task Management

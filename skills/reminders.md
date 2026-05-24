@@ -1,6 +1,7 @@
 ---
 name: reminders
 version: 1
+category: productivity
 ---
 
 # Reminders & Notifications

@@ -1,6 +1,7 @@
 ---
 name: writing
 version: 1
+category: docs
 ---
 
 # Writing Assistance

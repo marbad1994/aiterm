@@ -1,6 +1,7 @@
 ---
 name: contracts
 version: 1
+category: business
 ---
 
 # Contract & Legal Document Review

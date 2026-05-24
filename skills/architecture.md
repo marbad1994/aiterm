@@ -1,6 +1,7 @@
 ---
 name: architecture
 version: 1
+category: planning
 ---
 
 # Software Architecture Analysis

@@ -1,6 +1,7 @@
 ---
 name: web
 version: 1
+category: frontend
 ---
 
 # Web Development

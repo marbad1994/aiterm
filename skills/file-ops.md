@@ -1,6 +1,7 @@
 ---
 name: file-ops
 version: 1
+category: system
 ---
 
 # File Operations & Organization

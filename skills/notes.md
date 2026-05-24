@@ -1,6 +1,7 @@
 ---
 name: notes
 version: 1
+category: productivity
 ---
 
 # Notes & Knowledge Capture

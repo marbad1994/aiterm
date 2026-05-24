@@ -1,6 +1,7 @@
 ---
 name: email
 version: 1
+category: productivity
 ---
 
 # Email Handling

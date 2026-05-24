@@ -1,6 +1,7 @@
 ---
 name: backup
 version: 1
+category: system
 ---
 
 # Backup Management

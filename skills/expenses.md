@@ -1,6 +1,7 @@
 ---
 name: expenses
 version: 1
+category: business
 ---
 
 # Expense Tracking & Analysis

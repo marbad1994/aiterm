@@ -1,6 +1,7 @@
 ---
 name: format-conversion
 version: 1
+category: files
 ---
 
 # Document Format Conversion

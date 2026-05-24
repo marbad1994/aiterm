@@ -1,6 +1,7 @@
 ---
 name: invoices
 version: 1
+category: business
 ---
 
 # Invoice Generation

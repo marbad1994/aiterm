@@ -1,6 +1,7 @@
 ---
 name: research
 version: 1
+category: research
 ---
 
 # Research & Information Synthesis

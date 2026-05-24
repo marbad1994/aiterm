@@ -1,6 +1,7 @@
 ---
 name: documents
 version: 1
+category: files
 ---
 
 # Document Analysis & Processing

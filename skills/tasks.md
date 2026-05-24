@@ -1,6 +1,7 @@
 ---
 name: tasks
 version: 1
+category: productivity
 ---
 
 # Task Management

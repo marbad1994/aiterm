@@ -1,6 +1,7 @@
 ---
 name: test-coverage
 version: 1
+category: dev
 ---
 
 # Test Coverage Analysis
