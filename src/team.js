@@ -21,6 +21,7 @@ const os = require('os');
 const { makeClient, modelFor, isConfigured } = require('./llm');
 const { runAgent } = require('./agent');
 const { matchWorkflow, expandWorkflow } = require('./workflows');
+const agentOverview = require('./agent-overview');
 
 // Role → preferred skill name mapping. Most agents can be powered by a real
 // skill file from ~/.config/shmakk/skills/. When a skill file exists, its
@@ -422,6 +423,16 @@ async function runSubAgent({
   // Step 2: try to load the skill content from the catalog.
   const loaded = loadSkillContent(wantedSkill, roots);
 
+  // Register agent in the overview tracker.
+  const agentId = agentOverview.register(null, {
+    role,
+    skill: wantedSkill,
+    skillSource: loaded ? loaded.source : null,
+    task,
+    fileScope: fileScope || null,
+    topology,
+  });
+
   // Step 3: fall back to AGENT_ROSTER if no skill file found.
   const roster = AGENT_ROSTER[role];
   if (!loaded && !roster) {
@@ -512,6 +523,7 @@ async function runSubAgent({
   };
 
   try {
+    agentOverview.markRunning(agentId);
     await runOnce(subInput);
 
     // Retry once if the agent produced 0 tool calls — it likely got stuck in
@@ -540,6 +552,13 @@ async function runSubAgent({
       await runOnce(retryInput, { hintOverride: retryHint, requireTool: true });
     }
 
+    agentOverview.markDone(agentId, {
+      toolCount,
+      output: lines.join(''),
+      skill: loaded ? wantedSkill : null,
+      skillSource: loaded ? loaded.source : null,
+    });
+
     return {
       role, task,
       output: lines.join(''),
@@ -548,6 +567,7 @@ async function runSubAgent({
       skillUsed: loaded ? wantedSkill : null,
     };
   } catch (e) {
+    agentOverview.markError(agentId, e.message);
     return {
       role, task,
       output: lines.join(''),
@@ -735,6 +755,7 @@ async function runTeam({ input, roots, write, signal, mcpManager }) {
   write('\r\n');
 
   // Phase 2: Execute based on topology
+  agentOverview.startTeamRun(`team-${Date.now()}`);
   const agentResults = topology === 'pipeline'
     ? await runPipelineAgents({ agents, overallInput: input, roots, signal, mcpManager, write })
     : await runParallelAgents({ agents, overallInput: input, roots, signal, mcpManager, write });
@@ -746,6 +767,7 @@ async function runTeam({ input, roots, write, signal, mcpManager }) {
   const summary = await synthesizeResults({ overallInput: input, agentResults, client, signal });
   write(summary + '\r\n');
 
+  agentOverview.endTeamRun();
   return true;
 }
 

@@ -80,6 +80,36 @@ const SELF_COMMANDS = [
     action: 'show-plan',
   },
 
+  // ── Agent overview ──
+  {
+    patterns: [
+      /^(?:show\s+)?(?:agent\s+)?overview$/i,
+      /^(?:list\s+)?agents?$/i,
+      /^what\s+(?:agents?|specialists?)\s+(?:are|is)\s+(?:working|running|active)[\s?]*$/i,
+      /^who\s+(?:is\s+)?working[\s?]*$/i,
+      /^team\s+(?:status|overview)$/i,
+    ],
+    action: 'agent-overview',
+  },
+  // "agent skills" — show skills used by agents
+  {
+    patterns: [
+      /^agent\s+skills?$/i,
+      /^(?:show\s+)?agent\s+skills?$/i,
+    ],
+    action: 'agent-skills',
+  },
+  // "agent <role|id>" — drill into a specific agent
+  {
+    patterns: [
+      /^agent\s+(\S[\s\S]*)$/i,
+      /^show\s+agent\s+(\S[\s\S]*)$/i,
+      /^(?:detail|inspect|follow)\s+agent\s+(\S[\s\S]*)$/i,
+    ],
+    action: 'agent-detail',
+    needsArg: true,
+  },
+
   // ── Session ──
   {
     patterns: [/^(?:shmakk\s+)?status$/i],
@@ -403,6 +433,70 @@ function executeSelfCommand(match, write, ctx = {}) {
 
     // ── Plan ──
     case 'show-plan':     ctl.showPlan(); break;
+
+    // ── Agent overview ──
+    case 'agent-overview': {
+      const overview = require('./agent-overview');
+      const agents = overview.getAll();
+      const lines = overview.formatOverview(agents);
+      for (const line of lines) write(line + '\r\n');
+      break;
+    }
+    case 'agent-detail': {
+      const overview = require('./agent-overview');
+      const query = (match.arg || '').trim();
+      // Try exact id match first, then role match
+      let agent = overview.get(query);
+      if (!agent) {
+        const byRole = overview.findByRole(query);
+        if (byRole.length === 1) {
+          agent = byRole[0];
+        } else if (byRole.length > 1) {
+          write(`\x1b[36m[shmakk]\x1b[0m ${byRole.length} agents match "\x1b[1m${query}\x1b[0m":\r\n`);
+          for (const a of byRole) {
+            const icon = overview.statusIcon(a.status);
+            write(`  ${icon} \x1b[36m${a.id}\x1b[0m  \x1b[2m${a.role} · ${a.status}\x1b[0m\r\n`);
+          }
+          write(`\r\n\x1b[2mUse "agent <id>" to drill into a specific one.\x1b[0m\r\n`);
+          break;
+        }
+      }
+      if (!agent) {
+        write(`\x1b[33m[shmakk] no agent found matching "\x1b[1m${query}\x1b[0m"\r\n`);
+        write(`\x1b[2mTry "agent overview" to see all agents.\x1b[0m\r\n`);
+        break;
+      }
+      const lines = overview.formatAgentDetail(agent);
+      for (const line of lines) write(line + '\r\n');
+      break;
+    }
+    case 'agent-skills': {
+      const overview = require('./agent-overview');
+      const agents = overview.getAll();
+      if (!agents.length) {
+        write('\x1b[2mNo agents registered.\x1b[0m\r\n');
+        break;
+      }
+      const skillMap = new Map();
+      for (const a of agents) {
+        if (!a.skill) continue;
+        if (!skillMap.has(a.skill)) {
+          skillMap.set(a.skill, { skill: a.skill, source: a.skillSource, agents: [] });
+        }
+        skillMap.get(a.skill).agents.push(a.role);
+      }
+      if (!skillMap.size) {
+        write('\x1b[2mNo skills used by agents (all using roster hints).\x1b[0m\r\n');
+        break;
+      }
+      write(`\x1b[1mAgent Skills\x1b[0m\r\n\r\n`);
+      for (const [name, info] of skillMap) {
+        const roles = [...new Set(info.agents)].join(', ');
+        write(`  \x1b[36m${name}\x1b[0m  \x1b[2mused by: ${roles}\x1b[0m\r\n`);
+        if (info.source) write(`    \x1b[2msource: ${info.source}\x1b[0m\r\n`);
+      }
+      break;
+    }
 
     // ── Session ──
     case 'status':        ctl.status(); break;
