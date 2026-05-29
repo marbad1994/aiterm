@@ -126,4 +126,53 @@ async function ensureMakkorch() {
   }
 }
 
-module.exports = { makeClient, modelFor, isConfigured, ensureMakkorch };
+// ── DeepSeek settings ──────────────────────────────────────────────────────
+// DeepSeek thinking / reasoning_effort increases protocol complexity because
+// the runtime must distinguish visible content, internal reasoning_content,
+// and structured tool_calls.  That makes rare DSML leaks more likely in
+// streaming/tool-heavy flows.  Disable thinking for mutation/tool-loop turns.
+
+function isDeepSeekProvider() {
+  const base = (process.env.SHMAKK_BASE_URL || '').toLowerCase();
+  return base.includes('deepseek');
+}
+
+function getDeepSeekOptions(taskType) {
+  if (!isDeepSeekProvider()) return {};
+
+  // Respect runtime override (set after a DSML leak).
+  const forceNoThinking = process.env._SHMAKK_FORCE_NO_THINKING === '1';
+
+  if (forceNoThinking) {
+    return {
+      extra_body: {
+        thinking: { type: 'disabled' },
+      },
+    };
+  }
+
+  const toolOrMutationTurn =
+    taskType === 'edit_file' ||
+    taskType === 'run_command' ||
+    taskType === 'apply_patch' ||
+    taskType === 'tool_loop';
+
+  if (toolOrMutationTurn) {
+    return {
+      extra_body: {
+        thinking: { type: 'disabled' },
+      },
+      // Do NOT send reasoning_effort here.
+    };
+  }
+
+  // Non-mutation / planning turns: reasoning is fine.
+  return {
+    reasoning_effort: 'high',
+    extra_body: {
+      thinking: { type: 'enabled' },
+    },
+  };
+}
+
+module.exports = { makeClient, modelFor, isConfigured, ensureMakkorch, getDeepSeekOptions, isDeepSeekProvider };

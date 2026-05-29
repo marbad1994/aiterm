@@ -7,13 +7,23 @@
 
 const fs = require('fs');
 const path = require('path');
-const { makeClient, modelFor, isConfigured } = require('./llm');
+const { makeClient, modelFor, isConfigured, getDeepSeekOptions } = require('./llm');
+const {
+  sanitizeAssistantContent,
+  isLeakedToolMarkup,
+  mightBecomeInternalMarkup,
+  MUTATION_TOOLS,
+  isMutationTool,
+  hashArgs,
+  DSML_RETRY_USER_MESSAGE,
+} = require('./guard');
 const { buildOrRefreshIndex, relevantSubgraph } = require('./workspace-index');
 const { renderActiveSkillForPrompt } = require('./skills');
 const { renderRulesForPrompt } = require('./rules');
 const { renderMemoryForPrompt } = require('./memory');
 const sessionSearch = require('./session-search');
 const promptCache = require('./prompt-cache');
+const audit = require('./audit');
 const { buildSystemPrompt } = require('./system-prompt');
 const {
   TOOLS,
@@ -140,6 +150,40 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
 
   persistJournal('running');
   const promptCacheEnabled = String(process.env.SHMAKK_PROMPT_CACHE || '1') !== '0';
+
+  // ── Per-turn mutation-approval state ───────────────────────────────────
+  // Every mutation tool call must be individually approved.  If the user
+  // denies ANY mutation in a turn, ALL pending mutations from that turn are
+  // invalidated.  This prevents the agent from executing an edit after the
+  // user said no.
+  const turnApprovals = new Map();   // toolCallId → { approved, argsHash, expiresAt }
+  let turnDenied = false;
+
+  function clearTurnApprovals() {
+    turnApprovals.clear();
+    turnDenied = false;
+  }
+
+  function wrapConfirmTool(baseConfirm) {
+    if (!baseConfirm) return null;
+    return async ({ name, args, safety, description }) => {
+      // If this turn has already been denied, reject all mutation tools.
+      if (turnDenied && isMutationTool(name)) {
+        return false;
+      }
+      const ok = await baseConfirm({ name, args, safety, description });
+      if (!ok && isMutationTool(name)) {
+        turnDenied = true;
+        // Invalidate any pre-approved mutation calls from this turn.
+        for (const [id, a] of turnApprovals) {
+          if (isMutationTool(a.toolName)) a.approved = false;
+        }
+      }
+      return ok;
+    };
+  }
+
+  const guardedConfirm = wrapConfirmTool(confirmTool);
   const maxDiscoveryCallsPerRound = Math.max(
     1,
     Number(process.env.SHMAKK_MAX_DISCOVERY_CALLS_PER_ROUND)
@@ -219,6 +263,7 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
 
   // Tool loop. Streams content as it arrives; prints each tool call.
   let producedAnything = false;
+  const runState = { _dsmlLeakRetries: 0 };
   for (let i = 0; i < dynamicToolBudget; i++) {
     if (signal && signal.aborted) return messages.slice(1);
 
@@ -248,6 +293,7 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
         model: modelFor('agent'),
         messages, tools: allTools, tool_choice: toolChoiceForThisIter,
         temperature: 0, stream: true,
+        ...getDeepSeekOptions('tool_loop'),
       }, { signal });
     } catch (e) {
       stop();
@@ -258,12 +304,39 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
     let reasoningContent = '';
     const toolCalls = []; // [{id, type:'function', function:{name, arguments}}]
     let spinnerStopped = false;
+    let streamingContentOk = true;  // flipped to false on leak
     try {
       for await (const chunk of stream) {
+        // Check for abort between chunks.
+        if (signal && signal.aborted) {
+          streamingContentOk = false;
+          break;
+        }
         const delta = chunk.choices?.[0]?.delta;
         if (!delta) continue;
         if (delta.content) {
-          content += delta.content;
+          // ── Streaming guard: buffer tokens before flushing ──────────
+          // We never append tokens directly to visible chat state.
+          // Small lookbehind buffer so partial strings like "<｜｜DSML"
+          // are not flushed before we can detect them.
+          const token = delta.content;
+          content += token;
+
+          // Check the trailing portion for partial DSML prefixes.
+          // Only check the last ~80 chars — enough to catch any prefix.
+          const tail = content.slice(-80);
+          if (mightBecomeInternalMarkup(tail)) {
+            // Hold back — don't flush yet, the next token may complete
+            // a benign string or reveal leaked markup.
+            continue;
+          }
+
+          // If we have accumulated content and there's no dangerous
+          // prefix in the tail, flush it now.
+          if (content.length > 0 && !mightBecomeInternalMarkup(content.slice(-80))) {
+            // Nothing to flush separately here — the spinner handles
+            // the "thinking" display.  We just keep accumulating.
+          }
         }
         if (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length) {
           reasoningContent += delta.reasoning_content;
@@ -282,6 +355,54 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
       }
     } finally {
       if (!spinnerStopped) stop();
+    }
+
+    // ── DSML leak detection (after stream completes) ────────────────────
+    if (content && isLeakedToolMarkup(content)) {
+      const sanitized = sanitizeAssistantContent(content);
+      // Log the leak but do NOT persist raw content.
+      audit.append({
+        kind: 'dsml-leak',
+        model: modelFor('agent'),
+        leakedMarkupDetected: true,
+        retried: false,
+      });
+
+      // If this is the first leak in this turn, retry once with safer settings.
+      // We inject a user message telling the model not to emit DSML and re-run
+      // the current iteration.
+      const RETRY_MAX = 1;
+      if (!runState._dsmlLeakRetries) runState._dsmlLeakRetries = 0;
+
+      if (runState._dsmlLeakRetries < RETRY_MAX) {
+        runState._dsmlLeakRetries += 1;
+
+        // Remove the last user message (the one that triggered this turn)
+        // and replace it with the retry instruction so we don't grow history.
+        // Find the last user message index.
+        let lastUserIdx = -1;
+        for (let mi = messages.length - 1; mi >= 0; mi--) {
+          if (messages[mi].role === 'user') { lastUserIdx = mi; break; }
+        }
+        if (lastUserIdx >= 0) {
+          messages.splice(lastUserIdx, 1);
+        }
+        messages.push(DSML_RETRY_USER_MESSAGE);
+
+        // Disable thinking for this retry.
+        process.env._SHMAKK_FORCE_NO_THINKING = '1';
+        i--; // re-spend this iteration
+        audit.append({ kind: 'dsml-leak-retry', model: modelFor('agent') });
+        continue; // re-enter the tool loop
+      }
+
+      // Max retries exceeded — strip and show what we can.
+      content = sanitized.visibleText;
+      if (!content) {
+        write(dim('[shmakk] response contained only leaked tool markup — blocked.', colors) + '\n');
+        clearTaskJournal(roots[0]);
+        return messages.slice(1);
+      }
     }
 
     const fallbackActions = toolCalls.length ? [] : [
@@ -368,7 +489,7 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
       if (canUseCache && toolResultCache.has(cacheKey)) {
         result = toolResultCache.get(cacheKey);
       } else {
-        result = await dispatchTool(c.function.name, args, roots, confirmTool, signal, mcpManager);
+        result = await dispatchTool(c.function.name, args, roots, guardedConfirm, signal, mcpManager);
         if (canUseCache && !result?.error) toolResultCache.set(cacheKey, result);
         iterProgress = true;
       }
@@ -419,6 +540,7 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
       temperature: 0,
       tool_choice: 'none',
       stream: false,
+      ...getDeepSeekOptions('tool_loop'),
     }, { signal });
     const finalText = final.choices?.[0]?.message?.content || '';
     if (finalText) {
