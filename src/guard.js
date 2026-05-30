@@ -6,11 +6,13 @@
 
 // ── DSML leak detection ─────────────────────────────────────────────────────
 
+// DSML uses fullwidth vertical bars (U+FF5C): <｜DSML｜tool_calls>
+// Also catches double-bar variants and <function=name> format.
 const DSML_LEAK_RE =
-  /<\s*\/?\s*[｜|]{2}\s*DSML\s*[｜|]{2}\s*(tool_calls|invoke|parameter)\b/i;
+  /<(?:\s*\/?\s*(?:[｜|]+\s*(?:DSML\s*)?[｜|]+\s*(?:tool_calls|invoke|parameter)\b|[｜|]+(?:\s*tool_calls|\s*invoke|\s*parameter)\b)|\s*function\s*=\s*[a-zA-Z0-9_]+)/i;
 
 const DSML_TOOL_CALL_BLOCK_RE =
-  /<\s*[｜|]{2}\s*DSML\s*[｜|]{2}\s*tool_calls\s*>[\s\S]*?<\s*\/\s*[｜|]{2}\s*DSML\s*[｜|]{2}\s*tool_calls\s*>/gi;
+  /<(?:\s*[｜|]+\s*(?:DSML\s*)?[｜|]+\s*tool_calls\s*>|\s*[｜|]+\s*tool_calls\s*[｜|]*\s*>)[\s\S]*?<\s*\/\s*(?:[｜|]+\s*(?:DSML\s*)?[｜|]+|[｜|]+)\s*tool_calls\s*[｜|]*\s*>/gi;
 
 /** Returns true when visible assistant text contains leaked internal tool
  *  markup that should never reach the user. */

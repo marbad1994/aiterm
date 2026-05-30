@@ -27,12 +27,19 @@ function levenshtein(a, b) {
 
 // Natural-language pre-filter. If the input reads like a sentence or question,
 // skip correction entirely and route to the task agent.
-const NL_WORDS = new RegExp(
-  '\\b(' +
+// Only check the FIRST token — if it looks like a natural-language opener
+// ("Fix ...", "I ...", "Please ...") skip correction. This avoids matching
+// common action words that appear as command arguments (e.g. "install" in
+// "npm install").
+const NL_FIRST_WORD = new RegExp(
+  '^(' +
   'I|me|my|you|your|the|this|that|these|those|a|an|is|are|was|were|do|does|did|' +
   'can|could|would|should|please|why|what|how|where|when|who|which|' +
   'fix|tell|show|explain|help|find|look|check|run|make|build|install|create|update|' +
-  'add|remove|delete|change|setup|set\\s+up|debug' +
+  'add|remove|delete|change|setup|debug|' +
+  'hello|hi|hey|ok|okay|sure|yes|no|maybe|thanks|thank|sorry|' +
+  'let|lets|shall|will|might|must|need|want|got|get|give|take|' +
+  'here|there|now|then|just|also|only|very|really' +
   ')\\b',
   'i'
 );
@@ -43,7 +50,7 @@ function looksLikeNaturalLanguage(input) {
   if (trimmed.includes('?')) return true;
   const tokens = trimmed.split(/\s+/);
   if (tokens.length > 5) return true;
-  if (tokens.length > 2 && NL_WORDS.test(trimmed)) return true;
+  if (tokens.length >= 2 && NL_FIRST_WORD.test(trimmed)) return true;
   return false;
 }
 
