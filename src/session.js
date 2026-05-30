@@ -165,6 +165,7 @@ function makeToolConfirm(opts, ask, out, getAbort) {
 async function runOneSession(opts, registerSession) {
   const session = startSession({ debug: opts.debug, voiceEnabled: !!opts.voice });
   let colorsEnabled = opts.colors !== false;
+  let markdownEnabled = opts.markdown !== false;
   const out = (s) => session.stdoutWrite(colorsEnabled ? s : stripAnsi(s));
   const ask = makePrompter(session, out, {
     onNotify: opts.notify ? (summary, body) => notify(summary, body) : null,
@@ -395,6 +396,7 @@ async function runOneSession(opts, registerSession) {
             history,
             profile: opts.profile || voiceRouting.profile || 'balanced',
             colors: colorsEnabled,
+            markdown: markdownEnabled,
             voiceMode: true,
             specialistHint: voiceRouting.specialistHint,
             mcpManager,
@@ -647,6 +649,7 @@ async function runOneSession(opts, registerSession) {
                 history,
                 profile: opts.profile || sidebarRouting.profile || 'balanced',
                 colors: colorsEnabled,
+                markdown: markdownEnabled,
                 specialistHint: sidebarRouting.specialistHint,
                 mcpManager,
               });
@@ -813,6 +816,7 @@ async function runOneSession(opts, registerSession) {
         signal: ctrl.signal,
         profile: agentProfile,
         colors: colorsEnabled,
+        markdown: markdownEnabled,
         specialistHint: routing.specialistHint,
         mcpManager,
       };

@@ -27,6 +27,7 @@ function parseArgs(argv) {
     profile: null,
     profileSet: null,
     colors: null,
+    markdown: null,
     endpoint: null,
     modelRecommendation: false,
     voice: false,
@@ -98,6 +99,7 @@ function parseArgs(argv) {
       case '--notify': opts.notify = true; break;
       case '--completion': opts.completion = argv[++i] || null; break;
       case '--colors': opts.colors = argv[++i] || null; break;
+      case '--markdown': opts.markdown = argv[++i] || null; break;
       case '--endpoint': opts.endpoint = argv[++i] || null; break;
       case '--model-recommendation': opts.modelRecommendation = true; break;
       default: opts.unknown.push(a);
@@ -136,6 +138,7 @@ const HELP = `shmakk - AI-supervised terminal wrapper
   --workspace <path>               Override workspace root
   --profile <name>                 Startup profile: tiny|balanced|deep|builder|large-app
   --colors <true|false>            Enable or disable ANSI colors
+  --markdown <true|false>          Enable or disable markdown rendering
   --notify                         Desktop notifications for Y/n prompts
 
 ═══════════════════════════════════════════════════════════════════════════

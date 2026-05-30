@@ -56,6 +56,15 @@ async function main() {
     opts.colors = v === 'true';
   }
 
+  if (opts.markdown !== null) {
+    const v = String(opts.markdown).toLowerCase();
+    if (v !== 'true' && v !== 'false') {
+      process.stderr.write('[shmakk] invalid --markdown. Use: true|false\n');
+      process.exit(2);
+    }
+    opts.markdown = v === 'true';
+  }
+
   if (opts.help) {
     process.stdout.write(HELP);
     process.exit(0);

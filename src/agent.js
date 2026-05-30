@@ -84,6 +84,8 @@ function clearTaskJournal(root) {
   try { fs.rmSync(journalPath(root), { force: true }); } catch {}
 }
 
+const { renderBlock } = require('./markdown');
+
 // Tiny spinner so the user sees "the agent is thinking" while we wait on
 // the model. Erased when stop() is called.
 function startSpinner(write, label = 'thinking') {
@@ -104,19 +106,9 @@ function startSpinner(write, label = 'thinking') {
 
 function dim(s, enabled = true) { return enabled ? `\x1b[2m${s}\x1b[0m` : s; }
 
-function highlightCodeBlocks(text, enabled = true) {
-  const src = String(text || '');
-  if (!enabled) return src;
-  return src.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, (_m, lang, code) => {
-    const head = `\x1b[36m\x1b[1m${lang || 'code'}\x1b[0m`;
-    const body = `\x1b[90m${code.replace(/\n$/, '')}\x1b[0m`;
-    return `${head}\n${body}`;
-  }).replace(/\u0000\u0000\u0000/g, '```');
-}
-
 // ── Main agent entry point ──────────────────────────────────────────────────
 
-async function runAgent({ input, roots, glossary, confirmTool, write, signal, history = [], profile = 'balanced', colors = true, voiceMode = false, specialistHint = null, mcpManager = null, requireToolUse = false }) {
+async function runAgent({ input, roots, glossary, confirmTool, write, signal, history = [], profile = 'balanced', colors = true, markdown = true, voiceMode = false, specialistHint = null, mcpManager = null, requireToolUse = false }) {
   // roots: array of allowed workspace roots (first is the primary cwd).
   // history: prior conversation turns (assistant/user/tool). System prompt
   // is rebuilt fresh each call so the current cwd is always accurate.
@@ -486,7 +478,7 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
     // No tools → done.
     if (!normalizedToolCalls.length) {
       if (content) {
-        write(highlightCodeBlocks(content, colors));
+        write(renderBlock(content, { enabled: markdown, colors }));
         if (!content.endsWith('\n')) write('\n');
         producedAnything = true;
         if (promptCacheEnabled && cacheKey) {
@@ -586,7 +578,7 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
         ? finalSanitized.visibleText
         : finalText;
       if (displayText) {
-        write(displayText);
+        write(renderBlock(displayText, { enabled: markdown, colors }));
         if (!displayText.endsWith('\n')) write('\n');
       }
       if (finalSanitized.hadInternalLeak) {
