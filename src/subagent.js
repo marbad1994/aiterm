@@ -1,3 +1,5 @@
+const { modelFor } = require('./llm');
+
 // Auto-subagent planning pass. Runs short read-only sub-calls before the
 // main agent loop to scope work, identify risks, and outline a plan.
 // Extracted from agent.js.
@@ -35,7 +37,7 @@ async function runAutoSubagents({ client, input, roots, signal }) {
   for (let i = 0; i < focuses.length; i++) {
     try {
       const r = await client.chat.completions.create({
-        model: process.env.SHMAKK_MODEL || 'gpt-4o-mini',
+        model: modelFor('subagent-planning'),
         temperature: 0,
         stream: false,
         tool_choice: 'none',

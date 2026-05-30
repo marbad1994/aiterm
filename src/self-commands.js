@@ -84,7 +84,6 @@ const SELF_COMMANDS = [
   {
     patterns: [
       /^(?:show\s+)?(?:agent\s+)?overview$/i,
-      /^(?:list\s+)?agents?$/i,
       /^what\s+(?:agents?|specialists?)\s+(?:are|is)\s+(?:working|running|active)[\s?]*$/i,
       /^who\s+(?:is\s+)?working[\s?]*$/i,
       /^team\s+(?:status|overview)$/i,
@@ -384,6 +383,19 @@ const SELF_COMMANDS = [
       /^edits?$/i,
     ],
     action: 'review-edits',
+  },
+
+  // ── Sidebar (meta / out-of-band query) ──
+  // "Sidebar: what files did you touch?" runs the agent with full context
+  // but the query and response are never added to conversation history.
+  // Use this for meta-questions, status checks, and side-channel queries.
+  {
+    patterns: [
+      /^Sidebar:\s*(.+)$/i,
+      /^sidebar\s+(.+)$/i,
+    ],
+    action: 'sidebar-query',
+    needsArg: true,
   },
 ];
 
@@ -731,10 +743,10 @@ function executeSelfCommand(match, write, ctx = {}) {
       const list = listEndpoints(opts.workspace || process.cwd());
       const current = getCurrentEndpointName();
       if (!list.length) {
-        write('[shmakk] no endpoints configured in ~/.config/shmakk/endpoints.js\r\n');
+        write('[shmakk] no endpoints configured in ~/.config/shmakk/endpoints.json\r\n');
         break;
       }
-      write('[shmakk] available endpoints:\r\n');
+      write('[shmakk] available model endpoints:\r\n');
       for (const ep of list) {
         const marker = ep === current ? ' \x1b[1m*\x1b[0m ' : '   ';
         write(`${marker}${ep}\r\n`);

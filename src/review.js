@@ -1,9 +1,16 @@
 // Y/n prompt with cooperative cancellation. The returned `ask` accepts an
 // optional `{ onCancel }` callback that fires when the user hits Ctrl-C.
 
-function makePrompter(pty, write) {
+function makePrompter(pty, write, opts = {}) {
+  const { onNotify } = opts;
   return function ask(question, defaultYes, { onCancel, onWhy } = {}) {
     return new Promise((resolve) => {
+      if (onNotify) {
+        try {
+          const body = typeof question === 'string' ? question.replace(/\x1b\[[0-9;]*m/g, '') : String(question || '');
+          onNotify('shmakk needs your attention', body.slice(0, 120));
+        } catch {}
+      }
       const tag = defaultYes ? '[Y/n/?]' : '[y/N/?]';
       write(`${question} ${tag} `);
       let buf = '';

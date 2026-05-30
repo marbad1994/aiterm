@@ -33,10 +33,34 @@ export SHMAKK_API_KEY="your-api-key"
 export SHMAKK_MODEL="gpt-4o-mini"
 ```
 
-Or copy the template and fill it in:
+Or configure multiple native model providers in `~/.config/shmakk/endpoints.json`:
+
+```json
+{
+  "main": "gpt5-codex",
+  "models": {
+    "gpt5-codex": {
+      "provider": "codex",
+      "model": "gpt-5-codex",
+      "api_key": "OPENAI_API_KEY"
+    },
+    "local": {
+      "provider": "openai-compatible",
+      "base_url": "http://127.0.0.1:1234/v1",
+      "model": "qwen/qwen3.5-9b"
+    },
+    "claude": {
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-5-20250929",
+      "api_key": "ANTHROPIC_API_KEY"
+    }
+  }
+}
+```
 
 ```bash
-cp node_modules/shmakk/.env.example .env
+shmakk --endpoint claude
+shmakk --model-recommendation
 ```
 
 ### 2. Launch
@@ -114,7 +138,9 @@ The coordinator system enables complex, multi-step task execution with plan-firs
 | `SHMAKK_BASE_URL` | OpenAI-compatible base URL |
 | `SHMAKK_API_KEY` | API key |
 | `SHMAKK_MODEL` | Default model |
+| `SHMAKK_PROVIDER` | `openai-compatible`, `codex`, or `anthropic` |
 | `SHMAKK_HEADERS` | Extra headers (k=v,k=v) |
+| `SHMAKK_MODEL_RECOMMENDATION` | Set to `1` to let the configured `main` model route each call |
 
 ## Useful commands
 

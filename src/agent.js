@@ -196,8 +196,44 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
     const graph = relevantSubgraph(idx, input, 12, 1);
     if (graph.length) {
       indexHint = `\n\nCompact relevant subgraph for this task:\n${graph.map((n) => `- ${n.path} [role=${n.role}] symbols=${n.symbols.slice(0, 4).join(', ') || '-'} edges=${n.edges.slice(0, 4).join(', ') || '-'} snippet=${(n.snippet || []).slice(0, 3).join(' | ') || '-'}`).join('\n')}\nStart with these files and their immediate dependencies before broad exploration. Prefer these snippet cues before reading full files.`;
+    } else {
+      // Fallback: no query hits — give the agent a top-level map so it can
+      // start exploring without waiting for the user to say "read the dir".
+      const files = idx.files || {};
+      const configHints = [];
+      const topDirs = new Set();
+      const topFiles = new Set();
+      const allKeys = Object.keys(files);
+      // Determine which top-level names are directories vs files by checking
+      // whether they appear as a prefix for deeper entries.
+      const hasSlash = new Map(); // topName -> true if dir, false if top-level file
+      for (const rel of allKeys) {
+        const top = rel.split('/')[0];
+        if (!top || top.startsWith('.') || top === 'node_modules') continue;
+        if (rel === top) {
+          // A top-level file (no / in path) — only mark if not already known as dir
+          if (!hasSlash.has(top)) hasSlash.set(top, false);
+        } else {
+          // e.g. "src/agent.js" — top="src", this is a directory
+          hasSlash.set(top, true);
+        }
+        const base = rel.split('/').pop();
+        if (base === 'package.json' || base === 'README.md' || base === 'tsconfig.json') {
+          const f = files[rel];
+          configHints.push(`- ${rel} [role=${f.role}] snippet=${(f.snippet || []).slice(0, 1).join(' | ') || '-'}`);
+        }
+      }
+      for (const [name, isDir] of hasSlash) {
+        if (isDir) topDirs.add(name); else topFiles.add(name);
+      }
+      const topLines = [];
+      if (topDirs.size) topLines.push(`Top-level dirs: ${[...topDirs].sort().join(', ')}`);
+      if (topFiles.size) topLines.push(`Top-level files: ${[...topFiles].sort().join(', ')}`);
+      indexHint = `\n\nWorkspace structure (no query hits — start by exploring relevant directories):\n${topLines.join('\n')}${configHints.length ? '\n' + configHints.join('\n') : ''}\nUse list_dir to explore further.`;
     }
-  } catch {}
+  } catch (e) {
+    indexHint = `\n\nWorkspace index unavailable (${e.message || 'unknown error'}). Start with list_dir of the root directory to discover the project structure.`;
+  }
 
   // Build MCP tool hint for system prompt if MCP tools are available
   let mcpToolHint = null;
@@ -544,8 +580,18 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
     }, { signal });
     const finalText = final.choices?.[0]?.message?.content || '';
     if (finalText) {
-      write(finalText);
-      if (!finalText.endsWith('\n')) write('\n');
+      // ── DSML leak guard (same as the main loop) ──────────────────────
+      const finalSanitized = sanitizeAssistantContent(finalText);
+      const displayText = finalSanitized.hadInternalLeak
+        ? finalSanitized.visibleText
+        : finalText;
+      if (displayText) {
+        write(displayText);
+        if (!displayText.endsWith('\n')) write('\n');
+      }
+      if (finalSanitized.hadInternalLeak) {
+        audit.append({ kind: 'dsml-leak-finalize', model: modelFor('agent'), leakedMarkupDetected: true });
+      }
       clearTaskJournal(roots[0]);
       return messages.slice(1);
     }

@@ -11,6 +11,7 @@ const { clearIndex } = require('./workspace-index');
 const { loadGlossary } = require('./glossary');
 const { isConfigured } = require('./llm');
 const { makePrompter, decisionBanner } = require('./review');
+const { notify } = require('./notify');
 const { workspaceWarning } = require('./safety');
 const { createMCPManager } = require('./mcp-client');
 const { clearEdits } = require('./edit-tracker');
@@ -165,7 +166,9 @@ async function runOneSession(opts, registerSession) {
   const session = startSession({ debug: opts.debug, voiceEnabled: !!opts.voice });
   let colorsEnabled = opts.colors !== false;
   const out = (s) => session.stdoutWrite(colorsEnabled ? s : stripAnsi(s));
-  const ask = makePrompter(session, out);
+  const ask = makePrompter(session, out, {
+    onNotify: opts.notify ? (summary, body) => notify(summary, body) : null,
+  });
   const glossary = loadGlossary();
   // Workspace tracking: explicit --workspace is "pinned"; otherwise cwd
   // floats with the inner shell's `cd`. When both pinned and cwd differ,
@@ -622,6 +625,43 @@ async function runOneSession(opts, registerSession) {
         audit.append({ kind: 'self-command', cmd: lastCmd, action: selfCmd.action, cwd });
         // Clear any stale correction state so it doesn't leak into next command
         correctionOrigin = null;
+
+        // ── Sidebar query: run the agent with context but don't persist to history ──
+        if (selfCmd.action === 'sidebar-query' && selfCmd.arg) {
+          if (!isConfigured()) {
+            out('\r\n\x1b[33m[shmakk] LLM not configured — sidebar query ignored\x1b[0m\r\n');
+            session.childWrite('\r');
+            return;
+          }
+          await withAI(async (ctrl) => {
+            const sidebarRouting = routeToSpecialist(selfCmd.arg, [...history, { role: 'user', content: selfCmd.arg }]);
+            out('\x1b[36m[shmakk sidebar] (Ctrl-C to interrupt)\x1b[0m\r\n');
+            try {
+              const updated = await runAgent({
+                input: selfCmd.arg,
+                roots: currentRoots(),
+                glossary,
+                confirmTool: makeToolConfirm(opts, ask, out, () => ctrl.abort()),
+                write: out,
+                signal: ctrl.signal,
+                history,
+                profile: opts.profile || sidebarRouting.profile || 'balanced',
+                colors: colorsEnabled,
+                specialistHint: sidebarRouting.specialistHint,
+                mcpManager,
+              });
+              // Don't update history — sidebar queries are out-of-band.
+              // (runAgent already records turns in session search internally.)
+            } catch (e) {
+              if (!isAbortError(e)) {
+                out(`\x1b[31m[shmakk sidebar] error: ${e.message}\x1b[0m\r\n`);
+              }
+            }
+          });
+          session.childWrite('\r');
+          return;
+        }
+
         if (selfCmd.confirm) {
           const go = await ask(`Run ${selfCmd.action}?`, true, { onCancel: () => {} });
           if (!go) { session.childWrite('\r'); return; }
@@ -641,11 +681,18 @@ async function runOneSession(opts, registerSession) {
     // - Failed  (code != 0): give agent the original command the user typed, not any
     //   corrected variant — if a correction was applied but also failed, correctionOrigin
     //   still holds the user's original input and that's what the agent should reason about.
+    //
+    // After a correction was applied (whether it succeeded or failed), we MUST skip
+    // re-running correction on the original — otherwise it would propose the same fix
+    // again and enter an infinite loop (correct → feed corrected → succeed/fail →
+    // agent sees original → correction proposes same thing → feed again → ...).
     let cmd = lastCmd;
+    let correctionAlreadyTried = false;
     if (code === 0) {
       if (correctionOrigin && !opts.noAi) {
         cmd = correctionOrigin;
         correctionOrigin = null;
+        correctionAlreadyTried = true;
       } else {
         flushPending();
         return;
@@ -657,14 +704,19 @@ async function runOneSession(opts, registerSession) {
       if (correctionOrigin) {
         cmd = correctionOrigin;
         correctionOrigin = null;
+        correctionAlreadyTried = true;
       }
     }
 
     audit.append({ kind: 'failed-command', cmd, exit: code, cwd });
 
     // ── Correction runs standalone (no LLM needed) ──
+    // Skip correction if one was already applied for this input —
+    // re-running correction on the same original would just propose the same fix.
     let decision;
-    if (opts.noCorrection) {
+    if (correctionAlreadyTried) {
+      decision = { category: 'not_a_correction', proposed: null, safety: 'uncertain', reason: 'correction already tried — routing to agent' };
+    } else if (opts.noCorrection) {
       decision = { category: 'not_a_correction', proposed: null, safety: 'uncertain', reason: 'correction disabled' };
     } else {
       try {

@@ -33,12 +33,13 @@ const FLAGS = [
   { flag: '--tts', arg: false, desc: 'Text-to-Speech: spoken responses' },
   { flag: '--sts', arg: false, desc: 'Speech-to-Speech: always-on mic + TTS' },
   { flag: '--voice', arg: false, desc: 'Enable voice input (stt shortcut)' },
+  { flag: '--model-recommendation', arg: false, desc: 'Route each model call via main model recommendation' },
 
   // flags with arguments
   { flag: '--workspace', arg: '<path>', desc: 'Override workspace root' },
   { flag: '--profile', arg: '<name>', desc: 'Startup profile (tiny|balanced|deep|builder|large-app)' },
   { flag: '--profile-set', arg: '<name>', desc: 'Switch profile and restart' },
-  { flag: '--endpoint', arg: '<name>', desc: 'Use endpoint preset from ~/.config/shmakk/endpoints.js' },
+  { flag: '--endpoint', arg: '<name>', desc: 'Use model preset from ~/.config/shmakk/endpoints.json' },
   { flag: '--colors', arg: '<true|false>', desc: 'Toggle ANSI colors' },
   { flag: '--load-skill', arg: '<name>', desc: 'Load a skill into workspace state' },
   { flag: '--unload-skill', arg: '<name>', desc: 'Remove skill from registry' },
@@ -53,6 +54,7 @@ const FLAGS = [
   { flag: '--voice-silence-start-sec', arg: '<sec>', desc: 'Sound before recording starts' },
   { flag: '--voice-pad-start-sec', arg: '<sec>', desc: 'Padding before recording' },
   { flag: '--tts-voice', arg: '<name>', desc: 'Override Kokoro voice' },
+  { flag: '--notify', arg: false, desc: 'Send desktop notifications when shmakk needs your attention' },
 ];
 
 function bash() {

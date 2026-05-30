@@ -28,6 +28,7 @@ function parseArgs(argv) {
     profileSet: null,
     colors: null,
     endpoint: null,
+    modelRecommendation: false,
     voice: false,
     stt: false,
     tts: false,
@@ -39,6 +40,7 @@ function parseArgs(argv) {
     voiceSilenceStartSec: null,
     voicePadStartSec: null,
     ttsVoice: null,
+    notify: false,
     completion: null,
     unknown: [],
   };
@@ -93,9 +95,11 @@ function parseArgs(argv) {
       case '--voice-silence-start-sec': opts.voiceSilenceStartSec = argv[++i] || null; break;
       case '--voice-pad-start-sec': opts.voicePadStartSec = argv[++i] || null; break;
       case '--tts-voice': opts.ttsVoice = argv[++i] || null; break;
+      case '--notify': opts.notify = true; break;
       case '--completion': opts.completion = argv[++i] || null; break;
       case '--colors': opts.colors = argv[++i] || null; break;
       case '--endpoint': opts.endpoint = argv[++i] || null; break;
+      case '--model-recommendation': opts.modelRecommendation = true; break;
       default: opts.unknown.push(a);
     }
   }
@@ -142,7 +146,9 @@ Optional:
   --yes-files                     Auto-accept write_file, edit_file, and make_dir in auto mode
   --workspace <path>              Override workspace root
   --profile <name>                Startup profile: tiny|balanced|deep|builder|large-app
-  --endpoint <name>               Use endpoint preset from ~/.config/shmakk/endpoints.js
+  --endpoint <name>               Use model preset from ~/.config/shmakk/endpoints.json
+  --model-recommendation          Let the configured main model choose a model
+                                  from ~/.config/shmakk/endpoints.json per call
   --colors <true|false>           Toggle colored logs and code-block highlighting
   --debug                         Verbose logging to stderr
   --print-config                  Print resolved configuration and exit
@@ -157,7 +163,7 @@ Speech-to-Text / Text-to-Speech (VAD-based, no hotkeys):
   --voice-silence-threshold <%>   VAD amplitude threshold (default: 1%)
   --voice-silence-start-sec <sec> Seconds of sound before starting (default: 0.5)
   --voice-pad-start-sec <sec>     Padding added to start of recording (default: 0.3)
-  --tts-voice <name>              Override rotated voice schedule (default: af_heart)
+  --tts-voice <name>              Override rotated voice schedule (default: af_heart)\n  --notify                        Send desktop notifications when shmakk needs\n                                  your attention (Y/n prompts, plan approvals)
   --completion <bash|zsh|fish>    Output shell tab-completion script
 
 Browser Automation:
@@ -192,7 +198,9 @@ Environment:
   SHMAKK_API_KEY                  API key
   SHMAKK_MODEL                    Default model
   SHMAKK_HEADERS                  Comma-separated extra headers (k=v,k=v)
-  SHMAKK_REGISTRY                 Comma-separated model registry filter (for makkorch)
+  SHMAKK_PROVIDER                 Provider: openai-compatible|codex|anthropic
+  SHMAKK_REGISTRY                 Comma-separated model registry filter
+  SHMAKK_MODEL_RECOMMENDATION     Set to 1 to route each call via main model
 `;
 
 module.exports = { parseArgs, HELP };
