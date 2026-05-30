@@ -300,6 +300,33 @@ const HELP = `shmakk - AI-supervised terminal wrapper
   Tools: navigate, click, type, read_page, screenshot, evaluate, select,
   wait, scroll, close.
 
+═══════════════════════════════════════════════════════════════════════════
+  REMOTE HOSTS (SSH)
+═══════════════════════════════════════════════════════════════════════════
+
+  The agent can run commands on remote hosts and transfer files via SSH.
+  Configure hosts in .shmakk/hosts.json or ~/.config/shmakk/hosts.json:
+
+    {
+      "hosts": {
+        "devbox": {
+          "host": "user@192.168.1.100",
+          "port": 22,
+          "auto_approve": false,
+          "timeout_sec": 30
+        }
+      },
+      "allow_ssh_config": false,
+      "default_timeout_sec": 30
+    }
+
+  Agent tools: ssh_run (run command), ssh_push (upload), ssh_pull (download).
+  For persistent connections, use ControlMaster in ~/.ssh/config:
+    Host *
+      ControlMaster auto
+      ControlPath ~/.ssh/controlmasters/%r@%h:%p
+      ControlPersist 600
+
 `;
 
 module.exports = { parseArgs, HELP };

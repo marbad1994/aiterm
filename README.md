@@ -170,6 +170,46 @@ The coordinator system enables complex, multi-step task execution with plan-firs
 - Secrets (`.env`, keys, tokens) are never sent to the AI
 - Workspace root is enforced — tools can't access files outside it
 
+## Remote SSH
+
+The agent can run commands and transfer files on remote hosts via SSH. Configure hosts in `.shmakk/hosts.json` (per-project) or `~/.config/shmakk/hosts.json` (global):
+
+```json
+{
+  "hosts": {
+    "devbox": {
+      "host": "marcus@192.168.1.100",
+      "port": 22,
+      "auto_approve": false,
+      "timeout_sec": 30
+    },
+    "staging": {
+      "host": "deploy@10.0.0.5",
+      "port": 2247
+    }
+  },
+  "allow_ssh_config": false,
+  "default_timeout_sec": 30
+}
+```
+
+| Tool | Description |
+|------|-------------|
+| `ssh_run` | Run a shell command on a remote host |
+| `ssh_push` | Copy a local workspace file to a remote host |
+| `ssh_pull` | Copy a remote file into the local workspace |
+
+SSH key auth via `~/.ssh` is assumed. For persistent connections (avoid re-auth on every call), add to `~/.ssh/config`:
+
+```
+Host *
+  ControlMaster auto
+  ControlPath ~/.ssh/controlmasters/%r@%h:%p
+  ControlPersist 600
+```
+
+Then `mkdir -p ~/.ssh/controlmasters` once.
+
 ## How it works
 
 shmakk wraps your shell in a PTY (pseudo-terminal). Every command that fails is checked against a deterministic correction engine (no LLM, no API call). If a correction matches and the fixed command succeeds, shmakk feeds the agent your **original input** (not the fixed command) so the agent can address your full intent — not just the typo. You can also give task instructions in natural language — shmakk uses tools to read files, write code, list directories, and run commands, all constrained to your workspace.

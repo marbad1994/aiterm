@@ -14,6 +14,14 @@ const https = require('https');
 const http = require('http');
 const os = require('os');
 
+// Lazy-load SSH (optional — only required when ssh_* tools are called).
+let _ssh = null;
+function _getSSH(roots) {
+  if (_ssh) return _ssh;
+  try { _ssh = require('./ssh'); } catch (e) { return null; }
+  return _ssh;
+}
+
 // Lazy-load TTS (kokoro-js is an optional dep; only required when
 // tts_generate is actually called).
 let _ttsGenerate = null;
@@ -229,6 +237,44 @@ const TOOLS = [
       },
     },
   }},
+  { type: 'function', function: {
+    name: 'ssh_run',
+    description: 'Run a shell command on a pre-configured remote host via SSH. Hosts are defined in .shmakk/hosts.json or ~/.config/shmakk/hosts.json. Output is captured.',
+    parameters: {
+      type: 'object',
+      required: ['host', 'cmd'],
+      properties: {
+        host: { type: 'string', description: 'Host alias as defined in hosts.json (e.g. "devbox")' },
+        cmd: { type: 'string', description: 'Shell command to run on the remote host' },
+      },
+    },
+  }},
+  { type: 'function', function: {
+    name: 'ssh_push',
+    description: 'Copy a file from the local workspace to a remote host via SCP. Hosts are defined in .shmakk/hosts.json.',
+    parameters: {
+      type: 'object',
+      required: ['host', 'src', 'dest'],
+      properties: {
+        host: { type: 'string', description: 'Host alias as defined in hosts.json' },
+        src: { type: 'string', description: 'Local file path (relative to workspace or absolute)' },
+        dest: { type: 'string', description: 'Remote destination path (absolute on remote host)' },
+      },
+    },
+  }},
+  { type: 'function', function: {
+    name: 'ssh_pull',
+    description: 'Copy a file from a remote host to the local workspace via SCP. Hosts are defined in .shmakk/hosts.json.',
+    parameters: {
+      type: 'object',
+      required: ['host', 'src', 'dest'],
+      properties: {
+        host: { type: 'string', description: 'Host alias as defined in hosts.json' },
+        src: { type: 'string', description: 'Remote source path (absolute on remote host)' },
+        dest: { type: 'string', description: 'Local destination path (relative to workspace or absolute)' },
+      },
+    },
+  }},
 ];
 
 // Tool safety classification.
@@ -258,6 +304,7 @@ function classifyTool(name, args, mcpManager) {
   if (name === 'tts_generate') return 'safe';       // local-only, no network
   if (name === 'video_probe') return 'safe';        // read-only local metadata
   if (name === 'video_compose') return 'safe';      // local ffmpeg, reads only workspace files
+  if (name === 'ssh_run' || name === 'ssh_push' || name === 'ssh_pull') return 'unsafe';
   return 'uncertain';
 }
 
@@ -287,6 +334,9 @@ function describeTool(name, args, mcpManager) {
   if (name === 'tts_generate') return `tts_generate: "${(args.text || '').slice(0, 80)}" (voice: ${args.voice || 'af_heart'})`;
   if (name === 'video_probe') return `video_probe ${args.path || ''}`;
   if (name === 'video_compose') return `video_compose ${(args.segments || []).length} segments → ${args.outputPath || ''}`;
+  if (name === 'ssh_run') return `ssh_run ${args.host || ''}: ${(args.cmd || '').slice(0, 100)}`;
+  if (name === 'ssh_push') return `ssh_push ${args.src || ''} → ${args.host || ''}:${args.dest || ''}`;
+  if (name === 'ssh_pull') return `ssh_pull ${args.host || ''}:${args.src || ''} → ${args.dest || ''}`;
   return `${name} ${JSON.stringify(args).slice(0, 80)}`;
 }
 
@@ -766,6 +816,35 @@ async function dispatchTool(name, args, roots, confirmTool, signal, mcpManager) 
       }
     });
     return composeResult;
+  }
+  if (name === 'ssh_run') {
+    const ssh = _getSSH(roots);
+    if (!ssh) return { error: 'SSH module not available' };
+    const cfg = ssh.loadHostConfig(roots[0]);
+    const entry = ssh.resolveHost(cfg, args.host);
+    if (!entry) return { error: 'host not configured: ' + args.host + '. Define it in .shmakk/hosts.json or ~/.config/shmakk/hosts.json' };
+    return await ssh.sshRun(entry, args.cmd, signal);
+  }
+  if (name === 'ssh_push') {
+    const ssh = _getSSH(roots);
+    if (!ssh) return { error: 'SSH module not available' };
+    const cfg = ssh.loadHostConfig(roots[0]);
+    const entry = ssh.resolveHost(cfg, args.host);
+    if (!entry) return { error: 'host not configured: ' + args.host };
+    const p = within(roots, args.src);
+    if (!p) return { error: 'src path outside workspace' };
+    if (!fs.existsSync(p)) return { error: 'src not found: ' + args.src };
+    return await ssh.sshTransfer(entry, p, args.dest, 'push', signal);
+  }
+  if (name === 'ssh_pull') {
+    const ssh = _getSSH(roots);
+    if (!ssh) return { error: 'SSH module not available' };
+    const cfg = ssh.loadHostConfig(roots[0]);
+    const entry = ssh.resolveHost(cfg, args.host);
+    if (!entry) return { error: 'host not configured: ' + args.host };
+    const p = within(roots, args.dest);
+    if (!p) return { error: 'dest path outside workspace' };
+    return await ssh.sshTransfer(entry, args.src, p, 'pull', signal);
   }
   return { error: `unknown tool: ${name}` };
 }
