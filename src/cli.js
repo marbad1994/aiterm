@@ -108,99 +108,195 @@ function parseArgs(argv) {
 
 const HELP = `shmakk - AI-supervised terminal wrapper
 
-Usage:
-  shmakk                          Launch in auto mode
-  shmakk --review                 Launch in review mode (confirm every AI action)
-  shmakk --yes-files              Auto-accept AI file writes, edits, and directory creation
-  shmakk --update-command-glossary
-                                  Scan PATH and build local command glossary
-  shmakk --help                   Show this help
-  shmakk --build-history [files...]
-                                  Parse shell history files and build command
-                                  frequency map for better corrections.
-                                  Auto-detects bash/zsh/fish history if no
-                                  files given.
+  Launch shmakk, then type commands as usual. shmakk watches the shell, catches
+  failures, and calls an LLM to fix them, plan tasks, and edit files.
 
-Control (run from inside an shmakk session):
-  shmakk --status                 Show whether this terminal is inside shmakk
-  shmakk --stats                  Show session/task stats (journal, audit, active skill)
-  shmakk --compact                Compact context by clearing conversation + task journal
-  shmakk --load-skill <name>      Load a Claude/Codex-style skill into shmakk workspace state
-  shmakk --install-skill <url>    Download skill markdown from URL, validate, and load
-  shmakk -G, --global             With --load-skill or --install-skill, use global (~/.config/shmakk) instead of workspace
-  shmakk --list-skills            List all registered skills (workspace + global)
-  shmakk --skill-status           Show active skill and registry status (workspace + global)
-  shmakk --unload-skill <name>    Remove skill from whichever registry has it
-  shmakk --show-plan              Show current plan status (tasks and progress)
-  shmakk --mcp-status             Show configured MCP servers and their tools
-  shmakk --resume-status          Show task journal summary for resume continuity
-  shmakk --exit                   Cleanly exit the parent shmakk
-  shmakk --restart                Restart the inner shell (preserves window)
-  shmakk --reset                  Clear the AI conversation history (keep session)
-  shmakk --profile-set <name>     Switch profile and restart (tiny|balanced|deep|builder|large-app)
-  shmakk --colors <true|false>    Enable or disable ANSI colors + code highlighting
+  You can also type natural-language self-commands directly into the session
+  (e.g. "list skills", "agent overview", "compact"). See SELF-COMMANDS below.
 
-Optional:
-  --no-ai                         Disable AI entirely (pure passthrough)
-  --no-correction                 Disable command correction
-  --yes-files                     Auto-accept write_file, edit_file, and make_dir in auto mode
-  --workspace <path>              Override workspace root
-  --profile <name>                Startup profile: tiny|balanced|deep|builder|large-app
-  --endpoint <name>               Use model preset from ~/.config/shmakk/endpoints.json
-  --model-recommendation          Let the configured main model choose a model
-                                  from ~/.config/shmakk/endpoints.json per call
-  --colors <true|false>           Toggle colored logs and code-block highlighting
-  --debug                         Verbose logging to stderr
-  --print-config                  Print resolved configuration and exit
+  Type "help" inside a session to see this same text.
 
-Speech-to-Text / Text-to-Speech (VAD-based, no hotkeys):
-  --sts                           Speech-to-Speech: always-on mic + TTS responses
-  --stt                           Speech-to-Text: mic → text input (no TTS)
-  --tts                           Text-to-Speech: text input → spoken responses
-  --voice-language <code>         Language hint (e.g., en, es, fr)
-  --voice-max-sec <sec>           Max recording duration (default: 30)
-  --voice-silence-sec <sec>       VAD silence before stopping (default: 1.0)
-  --voice-silence-threshold <%>   VAD amplitude threshold (default: 1%)
-  --voice-silence-start-sec <sec> Seconds of sound before starting (default: 0.5)
-  --voice-pad-start-sec <sec>     Padding added to start of recording (default: 0.3)
-  --tts-voice <name>              Override rotated voice schedule (default: af_heart)\n  --notify                        Send desktop notifications when shmakk needs\n                                  your attention (Y/n prompts, plan approvals)
-  --completion <bash|zsh|fish>    Output shell tab-completion script
+═══════════════════════════════════════════════════════════════════════════
+  LAUNCH OPTIONS
+═══════════════════════════════════════════════════════════════════════════
 
-Browser Automation:
-  The agent has a built-in browser tool (navigate, click, type, read_page,
-  screenshot, evaluate, select, wait, scroll, close). Requires playwright:
-    npm install playwright && npx playwright install chromium
+  shmakk                           Launch in auto mode (AI acts on failures)
+  shmakk --review                  Launch in review mode (confirm every AI action)
+  shmakk --yes-files               Auto-accept file writes, edits, mkdir
 
-MCP (Model Context Protocol):
-  shmakk --mcp-status             Show configured MCP servers and their tools
-  Configure in ~/.config/shmakk/mcp.json or .shmakk/mcp.json:
+  shmakk --help                    Show this help
+  shmakk --build-history [files]   Parse shell history for better corrections
+  shmakk --update-command-glossary Scan PATH and build local command glossary
+
+  --no-ai                          Disable AI entirely (pure passthrough)
+  --no-correction                  Disable command correction
+  --debug                          Verbose logging to stderr
+  --print-config                   Print resolved configuration and exit
+
+  --workspace <path>               Override workspace root
+  --profile <name>                 Startup profile: tiny|balanced|deep|builder|large-app
+  --colors <true|false>            Enable or disable ANSI colors
+  --notify                         Desktop notifications for Y/n prompts
+
+═══════════════════════════════════════════════════════════════════════════
+  MODEL PROVIDERS
+═══════════════════════════════════════════════════════════════════════════
+
+  --endpoint <name>                Use model preset from ~/.config/shmakk/endpoints.json
+  --model-recommendation           Main model chooses best model per call
+
+  Providers: openai-compatible | codex | anthropic | google
+  Configure in ~/.config/shmakk/endpoints.json:
+    {
+      "main": "claude",
+      "models": {
+        "claude":       { "provider":"anthropic", "model":"claude-sonnet-4-5-...", "api_key":"..." },
+        "gpt5":         { "provider":"codex",     "model":"gpt-5-codex",        "api_key":"..." },
+        "local-qwen":   { "provider":"openai-compatible", "base_url":"http://127.0.0.1:1234/v1",
+                          "model":"qwen/qwen3.5-9b" }
+      }
+    }
+
+═══════════════════════════════════════════════════════════════════════════
+  SESSION CONTROL  (shmakk --flag  from another terminal)
+═══════════════════════════════════════════════════════════════════════════
+
+  shmakk --status                  Is this terminal inside shmakk?
+  shmakk --stats                   Session/task stats (journal, audit, skill)
+  shmakk --show-plan               Current plan: tasks and progress
+  shmakk --resume-status           Task journal summary for continuity
+  shmakk --mcp-status              MCP servers and their tools
+
+  shmakk --compact                 Clear conversation + task journal
+  shmakk --reset                   Clear AI conversation history (keep session)
+  shmakk --restart                 Restart the inner shell (keeps window)
+  shmakk --exit                    Cleanly exit the parent shmakk
+
+  shmakk --profile-set <name>      Switch profile and restart
+
+  shmakk --load-skill <name>       Load a skill into workspace state
+  shmakk --install-skill <url>     Download skill markdown from URL, validate, load
+  shmakk -G, --global              Use global (~/.config/shmakk) with --load-skill / --install-skill
+  shmakk --list-skills             List all registered skills (workspace + global)
+  shmakk --skill-status            Active skill and registry status
+  shmakk --unload-skill <name>     Remove skill from whichever registry has it
+
+═══════════════════════════════════════════════════════════════════════════
+  SELF-COMMANDS  (type inside an shmakk session)
+═══════════════════════════════════════════════════════════════════════════
+
+  ── Skills ──
+  list skills                      List all registered skills
+  list skills <category>           List skills in a specific category
+  list skill categories            Show available skill categories
+  find skills <query>              Search skills by name/description
+  load skill <name>                Load a skill into the active workspace
+  unload skill <name>              Remove a skill from its registry
+  skill status                     Show active skill and registry state
+
+  ── Agents & Team ──
+  agent overview                   Show all agents and their specialisms
+  agent skills                     List all agent skills
+  agent <name>                     Show detail for a specific agent
+  list agents                      Alias for agent overview
+
+  ── Context & Session ──
+  status                           Show session status
+  stats                            Show session/task statistics
+  resume status                    Show task journal for resume continuity
+  show plan                        Display current plan and progress
+  compact                          Clear conversation + task journal
+  reset                            Clear AI conversation history
+
+  ── Memory & Search ──
+  recall <query>                   Search past sessions by content
+  find session <query>             Find a session by topic
+  last sessions                    Show recent sessions
+  search db status                 Display session search DB info
+  show memory                      List stored memories
+  forget <query>                   Remove matching memories
+
+  ── Configuration ──
+  show config                      Print resolved configuration
+  mcp status                       Show MCP servers and tools
+  show rules                       Display active workspace rules
+  list endpoints                   List configured model endpoints
+  use endpoint <name>              Switch to a named model endpoint
+  set model to <name>              Change the active model
+  set url to <url>                 Change the base URL
+  set api key to <key>             Change the API key
+
+  ── Toggles ──
+  enable review  |  disable review
+  enable correction  |  disable correction
+  enable yes-files  |  disable yes-files
+  enable colors  |  disable colors
+  enable debug  |  disable debug
+
+  ── Workflows ──
+  list workflows                   Show available automation workflows
+  run workflow <name>              Execute a named workflow
+
+  ── Edits ──
+  review edits                     Step through pending file changes
+
+  ── Meta ──
+  sidebar <query>                  Out-of-band agent query (not added to history)
+  help                             Show this help
+
+═══════════════════════════════════════════════════════════════════════════
+  VOICE  (Speech-to-Text / Text-to-Speech)
+═══════════════════════════════════════════════════════════════════════════
+
+  --sts                            Speech-to-Speech: always-on mic + TTS
+  --stt                            Speech-to-Text: mic input, text output
+  --tts                            Text-to-Speech: text input, spoken output
+
+  --voice-language <code>          Language hint (e.g. en, es, fr)
+  --voice-max-sec <sec>            Max recording seconds (default: 30)
+  --voice-silence-sec <sec>        Silence before stopping (default: 1.0)
+  --voice-silence-threshold <%>    VAD amplitude threshold (default: 1%)
+  --voice-silence-start-sec <sec>  Sound required before start (default: 0.5)
+  --voice-pad-start-sec <sec>      Padding at start of recording (default: 0.3)
+  --tts-voice <name>               Override daily voice rotation
+
+  STT: Whisper-base ONNX in-process. No Python, no server, no API key.
+  TTS: kokoro-js (Kokoro-82M ONNX, ~334MB fp16). Auto-download on first use.
+  Requires aplay, paplay, or afplay for audio. 28 voices, rotated daily.
+
+═══════════════════════════════════════════════════════════════════════════
+  ENVIRONMENT
+═══════════════════════════════════════════════════════════════════════════
+
+  SHMAKK_BASE_URL                  OpenAI-compatible base URL
+  SHMAKK_API_KEY                   API key
+  SHMAKK_MODEL                     Default model
+  SHMAKK_PROVIDER                  Provider: openai-compatible|codex|anthropic|google
+  SHMAKK_HEADERS                   Extra headers: k=v,k=v
+  SHMAKK_REGISTRY                  Model registry filter (comma-separated)
+  SHMAKK_MODEL_RECOMMENDATION      Set to 1 to let main model choose per call
+
+  SHMAKK_HF_CACHE                  HuggingFace cache directory (voice models)
+  SHMAKK_TTS_VOICE                 Pin a specific TTS voice
+  SHMAKK_TTS_DTYPE                 Kokoro dtype: fp32|fp16|q8|q4|q4f16 (default: fp16)
+  SHMAKK_VOICE_LANGUAGE            Language hint for STT
+  SHMAKK_VOICE_MAX_SEC             Max recording seconds
+  SHMAKK_VOICE_SILENCE_SEC         VAD silence threshold seconds
+  SHMAKK_VOICE_SILENCE_THRESHOLD   VAD amplitude threshold
+  SHMAKK_VOICE_PAD_START_SEC       Start-of-recording padding
+
+═══════════════════════════════════════════════════════════════════════════
+  MCP & BROWSER
+═══════════════════════════════════════════════════════════════════════════
+
+  MCP servers: configure in ~/.config/shmakk/mcp.json or .shmakk/mcp.json
     { "mcpServers": { "name": { "command": "...", "args": [...] } } }
 
-  Voice uses Whisper-base ONNX in-process. No Python, no server, no API key.
-  Model auto-downloads on first use.
+  Browser automation: requires playwright
+    npm install playwright && npx playwright install chromium
+  Tools: navigate, click, type, read_page, screenshot, evaluate, select,
+  wait, scroll, close.
 
-  TTS uses kokoro-js (Kokoro-82M ONNX, ~334MB fp16). Model auto-downloads on first use.
-  Requires: aplay, paplay, or afplay for audio playback.
-  All 28 Kokoro voices rotate automatically on a daily schedule.
-
-Voice environment:
-  SHMAKK_HF_CACHE                 HuggingFace cache directory override
-  SHMAKK_TTS_VOICE                Pin a specific TTS voice (default: auto-rotated)
-  SHMAKK_TTS_DTYPE                Kokoro dtype: fp32, fp16, q8, q4, q4f16 (default: fp16)
-  SHMAKK_VOICE_LANGUAGE           Language hint for STT (e.g., en, es, fr)
-  SHMAKK_VOICE_MAX_SEC            Max recording seconds (default: 30)
-  SHMAKK_VOICE_SILENCE_SEC        VAD silence threshold seconds (default: 1.0)
-  SHMAKK_VOICE_SILENCE_THRESHOLD  VAD amplitude threshold (default: 1%)
-  SHMAKK_VOICE_PAD_START_SEC      Padding added to start of recording (default: 0.3)
-
-Environment:
-  SHMAKK_BASE_URL                 OpenAI-compatible base URL
-  SHMAKK_API_KEY                  API key
-  SHMAKK_MODEL                    Default model
-  SHMAKK_HEADERS                  Comma-separated extra headers (k=v,k=v)
-  SHMAKK_PROVIDER                 Provider: openai-compatible|codex|anthropic
-  SHMAKK_REGISTRY                 Comma-separated model registry filter
-  SHMAKK_MODEL_RECOMMENDATION     Set to 1 to route each call via main model
 `;
 
 module.exports = { parseArgs, HELP };
