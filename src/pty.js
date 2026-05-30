@@ -1,4 +1,4 @@
-const pty = require('node-pty');
+const pty = require('@lydell/node-pty');
 const { EventEmitter } = require('events');
 const { detectShell } = require('./shell');
 const { configureForShell } = require('./hooks');
