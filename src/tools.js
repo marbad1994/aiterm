@@ -81,7 +81,7 @@ function within(roots, p) {
 const TOOLS = [
   { type: 'function', function: {
     name: 'read_file',
-    description: 'Read a UTF-8 file inside the workspace. Supports compact partial reads.',
+    description: 'Read a file inside the workspace. Text files support partial reads (head, tail, grep, imports, exports, symbol). Image files (.png/.jpg/.gif/.webp/.bmp/.svg) are returned as base64 for vision analysis.',
     parameters: {
       type: 'object',
       required: ['path'],
@@ -397,6 +397,31 @@ async function dispatchTool(name, args, roots, confirmTool, signal, mcpManager) 
     if (!p) return { error: 'path outside workspace' };
     try {
       const buf = fs.readFileSync(p);
+      const ext = path.extname(p).toLowerCase();
+
+      // Image files: return as base64 for vision-capable providers.
+      // Mode-specific sub-reads don't apply to images — always return full.
+      const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg']);
+      const MIME_MAP = {
+        '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+        '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
+        '.svg': 'image/svg+xml',
+      };
+      if (IMAGE_EXTS.has(ext)) {
+        const maxImageBytes = 2 * 1024 * 1024; // 2 MB binary (~2.7 MB base64)
+        const slice = buf.length > maxImageBytes ? buf.subarray(0, maxImageBytes) : buf;
+        const b64 = slice.toString('base64');
+        return {
+          content: `[Image: ${path.basename(p)} — ${buf.length} bytes${buf.length > maxImageBytes ? ' (truncated to 2MB for display)' : ''}]`,
+          images: [{
+            mimeType: MIME_MAP[ext],
+            data: b64,
+            dataLength: b64.length,
+            truncated: buf.length > maxImageBytes,
+          }],
+        };
+      }
+
       const text = buf.slice(0, MAX_FILE_BYTES).toString('utf8');
       const lines = text.split(/\r?\n/);
       const mode = args.mode || 'full';
