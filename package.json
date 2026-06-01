@@ -1,6 +1,6 @@
 {
   "name": "shmakk",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "description": "AI-supervised terminal wrapper — command correction, tool-driven tasks, safety controls",
   "license": "MIT",
   "keywords": [

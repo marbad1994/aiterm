@@ -115,6 +115,12 @@ function preserveCase(original, corrected) {
 }
 
 async function correct({ input, glossary, signal: _unused }) {
+  // Null/empty input: can happen at shell startup when precmd fires before
+  // any command is executed (especially in zsh). Nothing to correct.
+  if (!input || !input.trim()) {
+    return { category: 'not_a_correction', proposed: null, safety: 'uncertain', reason: 'empty input' };
+  }
+
   // /-prefixed and "shmakk ..." commands are shmakk self-commands.
   // They should never reach the correction engine — bail out immediately.
   if (/^\//.test(input) || /^shmakk\s/i.test(input)) {

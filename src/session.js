@@ -613,6 +613,14 @@ async function runOneSession(opts, registerSession) {
     lastCommand = null;
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
 
+    // No command was tracked — precmd can fire at shell startup (especially
+    // in zsh) before any command executes. There's nothing to correct or
+    // route to the agent.
+    if (!lastCmd) {
+      discardPending();
+      return;
+    }
+
     // ── Self-command detection (FIRST — before ANY other processing) ──
     // Self-commands are pure local execution. They MUST bypass:
     //   - the noAi early-return (they don't need an LLM)
