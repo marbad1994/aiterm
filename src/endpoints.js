@@ -73,6 +73,7 @@ function normalizeModelConfig(name, cfg) {
     headers: cfg.headers || cfg.headears || null,
     registry: cfg.registry || null,
     main: !!cfg.main,
+    vision: !!cfg.vision,
   };
 }
 
@@ -143,6 +144,10 @@ function getCurrentEndpointName() {
   return currentEndpointName;
 }
 
+function supportsVision() {
+  return !!(currentEndpointConfig && currentEndpointConfig.vision);
+}
+
 function listEndpoints(cwd) {
   return Object.keys(loadModelRegistry(cwd).models);
 }
@@ -160,5 +165,6 @@ module.exports = {
   listEndpoints,
   getCurrentEndpoint,
   getCurrentEndpointName,
+  supportsVision,
   getModelRegistry,
 };

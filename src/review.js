@@ -2,13 +2,13 @@
 // optional `{ onCancel }` callback that fires when the user hits Ctrl-C.
 
 function makePrompter(pty, write, opts = {}) {
-  const { onNotify } = opts;
   return function ask(question, defaultYes, { onCancel, onWhy } = {}) {
     return new Promise((resolve) => {
-      if (onNotify) {
+      if (opts.notify) {
         try {
+          const { notify } = require('./notify');
           const body = typeof question === 'string' ? question.replace(/\x1b\[[0-9;]*m/g, '') : String(question || '');
-          onNotify('shmakk needs your attention', body.slice(0, 120));
+          notify('shmakk needs your attention', body.slice(0, 120));
         } catch {}
       }
       const tag = defaultYes ? '[Y/n/?]' : '[y/N/?]';

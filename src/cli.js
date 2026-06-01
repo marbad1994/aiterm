@@ -41,8 +41,10 @@ function parseArgs(argv) {
     voiceSilenceStartSec: null,
     voicePadStartSec: null,
     ttsVoice: null,
-    notify: false,
+    notify: true,
     completion: null,
+    helpCategory: null,
+    shell: null,
     unknown: [],
   };
 
@@ -53,7 +55,13 @@ function parseArgs(argv) {
       case '--yes-files': opts.yesFiles = true; break;
       case '--update-command-glossary': opts.updateGlossary = true; break;
       case '-h':
-      case '--help': opts.help = true; break;
+      case '--help':
+        opts.help = true;
+        // Capture optional category: shmakk --help voice
+        if (i + 1 < argv.length && !argv[i + 1].startsWith('-')) {
+          opts.helpCategory = argv[++i];
+        }
+        break;
       case '--debug': opts.debug = true; break;
       case '--no-ai': opts.noAi = true; break;
       case '--no-correction': opts.noCorrection = true; break;
@@ -102,34 +110,67 @@ function parseArgs(argv) {
       case '--markdown': opts.markdown = argv[++i] || null; break;
       case '--endpoint': opts.endpoint = argv[++i] || null; break;
       case '--model-recommendation': opts.modelRecommendation = true; break;
+      case '--shell':
+        {
+          const v = argv[++i];
+          if (!v || !['fish', 'bash', 'zsh'].includes(v)) {
+            process.stderr.write('[shmakk] invalid --shell. Use: fish|bash|zsh\n');
+            process.exit(2);
+          }
+          opts.shell = v;
+        }
+        break;
       default: opts.unknown.push(a);
     }
   }
   return opts;
 }
 
-const HELP = `shmakk - AI-supervised terminal wrapper
+// ── Help: category-based navigation ──────────────────────────────────────────
+
+const HELP_SUMMARY = `shmakk - AI-supervised terminal wrapper
 
   Launch shmakk, then type commands as usual. shmakk watches the shell, catches
   failures, and calls an LLM to fix them, plan tasks, and edit files.
 
-  You can also type natural-language self-commands directly into the session
-  (e.g. "list skills", "agent overview", "compact"). See SELF-COMMANDS below.
-
   Type "help" inside a session to see this same text.
 
+  Usage: shmakk [--flag ...]
+         shmakk --help [category]
+
+Categories (shmakk --help <name> for details):
+
+  launch       Startup modes, profiles, tuning flags
+  session      Status, stats, restart, exit, control signals
+  skills       Skill discovery, loading, listing, management
+  models       Provider configuration, endpoint presets
+  voice        Speech-to-Text / Text-to-Speech options
+  env          Environment variable reference
+  mcp          MCP servers and browser automation
+  ssh          Remote host execution
+  self         Natural-language self-commands (inside a session)
+
+`;
+
+const HELP_SECTIONS = {};
+
+HELP_SECTIONS.launch = `═══════════════════════════════════════════════════════════════════════════
+  LAUNCH OPTIONS  (shmakk --flag  from outside a session)
 ═══════════════════════════════════════════════════════════════════════════
-  LAUNCH OPTIONS
-═══════════════════════════════════════════════════════════════════════════
+
+  These flags only apply when starting a new shmakk session. They are
+  ignored if you are already inside shmakk (SHMAKK=1).
 
   shmakk                           Launch in auto mode (AI acts on failures)
   shmakk --review                  Launch in review mode (confirm every AI action)
   shmakk --yes-files               Auto-accept file writes, edits, mkdir
 
-  shmakk --help                    Show this help
+  shmakk --help                    Show overview (this text)
+  shmakk --help <category>         Show detailed help for a category
   shmakk --build-history [files]   Parse shell history for better corrections
   shmakk --update-command-glossary Scan PATH and build local command glossary
 
+  --shell <fish|bash|zsh>          Use a specific shell (default: current $SHELL)
   --no-ai                          Disable AI entirely (pure passthrough)
   --no-correction                  Disable command correction
   --debug                          Verbose logging to stderr
@@ -140,8 +181,9 @@ const HELP = `shmakk - AI-supervised terminal wrapper
   --colors <true|false>            Enable or disable ANSI colors
   --markdown <true|false>          Enable or disable markdown rendering
   --notify                         Desktop notifications for Y/n prompts
+`;
 
-═══════════════════════════════════════════════════════════════════════════
+HELP_SECTIONS.models = `═══════════════════════════════════════════════════════════════════════════
   MODEL PROVIDERS
 ═══════════════════════════════════════════════════════════════════════════
 
@@ -159,8 +201,9 @@ const HELP = `shmakk - AI-supervised terminal wrapper
                           "model":"qwen/qwen3.5-9b" }
       }
     }
+`;
 
-═══════════════════════════════════════════════════════════════════════════
+HELP_SECTIONS.session = `═══════════════════════════════════════════════════════════════════════════
   SESSION CONTROL  (shmakk --flag  from another terminal)
 ═══════════════════════════════════════════════════════════════════════════
 
@@ -176,6 +219,11 @@ const HELP = `shmakk - AI-supervised terminal wrapper
   shmakk --exit                    Cleanly exit the parent shmakk
 
   shmakk --profile-set <name>      Switch profile and restart
+`;
+
+HELP_SECTIONS.skills = `═══════════════════════════════════════════════════════════════════════════
+  SKILLS
+═══════════════════════════════════════════════════════════════════════════
 
   shmakk --load-skill <name>       Load a skill into workspace state
   shmakk --install-skill <url>     Download skill markdown from URL, validate, load
@@ -183,71 +231,9 @@ const HELP = `shmakk - AI-supervised terminal wrapper
   shmakk --list-skills             List all registered skills (workspace + global)
   shmakk --skill-status            Active skill and registry status
   shmakk --unload-skill <name>     Remove skill from whichever registry has it
+`;
 
-═══════════════════════════════════════════════════════════════════════════
-  SELF-COMMANDS  (type inside an shmakk session)
-═══════════════════════════════════════════════════════════════════════════
-
-  ── Skills ──
-  list skills                      List all registered skills
-  list skills <category>           List skills in a specific category
-  list skill categories            Show available skill categories
-  find skills <query>              Search skills by name/description
-  load skill <name>                Load a skill into the active workspace
-  unload skill <name>              Remove a skill from its registry
-  skill status                     Show active skill and registry state
-
-  ── Agents & Team ──
-  agent overview                   Show all agents and their specialisms
-  agent skills                     List all agent skills
-  agent <name>                     Show detail for a specific agent
-  list agents                      Alias for agent overview
-
-  ── Context & Session ──
-  status                           Show session status
-  stats                            Show session/task statistics
-  resume status                    Show task journal for resume continuity
-  show plan                        Display current plan and progress
-  compact                          Clear conversation + task journal
-  reset                            Clear AI conversation history
-
-  ── Memory & Search ──
-  recall <query>                   Search past sessions by content
-  find session <query>             Find a session by topic
-  last sessions                    Show recent sessions
-  search db status                 Display session search DB info
-  show memory                      List stored memories
-  forget <query>                   Remove matching memories
-
-  ── Configuration ──
-  show config                      Print resolved configuration
-  mcp status                       Show MCP servers and tools
-  show rules                       Display active workspace rules
-  list endpoints                   List configured model endpoints
-  use endpoint <name>              Switch to a named model endpoint
-  set model to <name>              Change the active model
-  set url to <url>                 Change the base URL
-  set api key to <key>             Change the API key
-
-  ── Toggles ──
-  enable review  |  disable review
-  enable correction  |  disable correction
-  enable yes-files  |  disable yes-files
-  enable colors  |  disable colors
-  enable debug  |  disable debug
-
-  ── Workflows ──
-  list workflows                   Show available automation workflows
-  run workflow <name>              Execute a named workflow
-
-  ── Edits ──
-  review edits                     Step through pending file changes
-
-  ── Meta ──
-  sidebar <query>                  Out-of-band agent query (not added to history)
-  help                             Show this help
-
-═══════════════════════════════════════════════════════════════════════════
+HELP_SECTIONS.voice = `═══════════════════════════════════════════════════════════════════════════
   VOICE  (Speech-to-Text / Text-to-Speech)
 ═══════════════════════════════════════════════════════════════════════════
 
@@ -266,8 +252,9 @@ const HELP = `shmakk - AI-supervised terminal wrapper
   STT: Whisper-base ONNX in-process. No Python, no server, no API key.
   TTS: kokoro-js (Kokoro-82M ONNX, ~334MB fp16). Auto-download on first use.
   Requires aplay, paplay, or afplay for audio. 28 voices, rotated daily.
+`;
 
-═══════════════════════════════════════════════════════════════════════════
+HELP_SECTIONS.env = `═══════════════════════════════════════════════════════════════════════════
   ENVIRONMENT
 ═══════════════════════════════════════════════════════════════════════════
 
@@ -287,8 +274,9 @@ const HELP = `shmakk - AI-supervised terminal wrapper
   SHMAKK_VOICE_SILENCE_SEC         VAD silence threshold seconds
   SHMAKK_VOICE_SILENCE_THRESHOLD   VAD amplitude threshold
   SHMAKK_VOICE_PAD_START_SEC       Start-of-recording padding
+`;
 
-═══════════════════════════════════════════════════════════════════════════
+HELP_SECTIONS.mcp = `═══════════════════════════════════════════════════════════════════════════
   MCP & BROWSER
 ═══════════════════════════════════════════════════════════════════════════
 
@@ -299,8 +287,9 @@ const HELP = `shmakk - AI-supervised terminal wrapper
     npm install playwright && npx playwright install chromium
   Tools: navigate, click, type, read_page, screenshot, evaluate, select,
   wait, scroll, close.
+`;
 
-═══════════════════════════════════════════════════════════════════════════
+HELP_SECTIONS.ssh = `═══════════════════════════════════════════════════════════════════════════
   REMOTE HOSTS (SSH)
 ═══════════════════════════════════════════════════════════════════════════
 
@@ -326,7 +315,106 @@ const HELP = `shmakk - AI-supervised terminal wrapper
       ControlMaster auto
       ControlPath ~/.ssh/controlmasters/%r@%h:%p
       ControlPersist 600
+`;
+
+HELP_SECTIONS.self = `═══════════════════════════════════════════════════════════════════════════
+  SELF-COMMANDS  (type inside an shmakk session)
+═══════════════════════════════════════════════════════════════════════════
+
+  Self-commands work with a prefix — /cmd or shmakk cmd.
+  Bare words like "status" or "stats" go to the shell, not shmakk.
+
+  -- Session --
+  /status  |  shmakk status         Show session status
+  /stats   |  shmakk stats          Show session/task statistics
+  /sessions  |  shmakk sessions     Show recent sessions
+  show sessions  |  last sessions   (same as /sessions)
+  resume status                     Show task journal for resume continuity
+  show plan                         Display current plan and progress
+  /compact  |  shmakk compact       Clear conversation + task journal
+  /reset  |  shmakk reset           Clear AI conversation history
+
+  -- Skills --
+  list skills                       List all registered skills
+  list skills <category>            List skills in a specific category
+  list skill categories             Show available skill categories
+  find skills <query>               Search skills by name/description
+  load skill <name>                 Load a skill into the active workspace
+  unload skill <name>               Remove a skill from its registry
+  skill status                      Show active skill and registry state
+
+  -- Agents & Team --
+  agent overview                    Show all agents and their specialisms
+  agent skills                      List all agent skills
+  agent <name>                      Show detail for a specific agent
+  list agents                       Alias for agent overview
+
+  -- Memory & Search --
+  recall <query>                    Search past sessions by content
+  find session <query>              Find a session by topic
+  search db status                  Display session search DB info
+  show memory                       List stored memories
+  forget <query>                    Remove matching memories
+
+  -- Configuration --
+  show config                       Print resolved configuration
+  mcp status                        Show MCP servers and tools
+  show rules                        Display active workspace rules
+  list endpoints                    List configured model endpoints
+  use endpoint <name>               Switch to a named model endpoint
+  set model to <name>               Change the active model
+  set url to <url>                  Change the base URL
+  set api key to <key>              Change the API key
+
+  -- Toggles --
+  enable review  |  disable review
+  enable correction  |  disable correction
+  enable yes-files  |  disable yes-files
+  enable colors  |  disable colors
+  enable debug  |  disable debug
+
+  -- Workflows --
+  list workflows                    Show available automation workflows
+  run workflow <name>               Execute a named workflow
+
+  -- Edits --
+  review edits                      Step through pending file changes
+
+  -- Meta --
+  sidebar <query>                   Out-of-band agent query (not added to history)
+  help                              Show this help
+`;
+
+// Resolve: returns the full old HELP string for backward compat, or the category
+// text, or the summary.
+function resolveHelp(category) {
+  if (category) {
+    const key = category.toLowerCase();
+    if (HELP_SECTIONS[key]) return HELP_SECTIONS[key];
+    // Unknown category: show summary + available categories
+    const available = Object.keys(HELP_SECTIONS).join(', ');
+    return HELP_SUMMARY + `Unknown category "${category}". Available: ${available}\n`;
+  }
+  return HELP_SUMMARY;
+}
+
+// Help text shown INSIDE a session (no launch flags — you're already running)
+const HELP_SESSION_SUMMARY = `shmakk — inside a session
+
+  Type commands as usual. shmakk watches the shell, catches failures, and
+  calls an LLM to fix them, plan tasks, and edit files.
+
+  Self-commands use a prefix: /cmd  or  shmakk cmd
+  Examples:  /status   /sessions   shmakk status   shmakk show sessions
+
+  Multi-word natural language also works:  "show help"  "list skills"
+
+  For the full reference: shmakk --help self (from outside the session)
+  For launch flags:        shmakk --help launch
 
 `;
 
-module.exports = { parseArgs, HELP };
+// Full legacy HELP for backward compat
+const HELP = HELP_SUMMARY + Object.values(HELP_SECTIONS).join('\n');
+
+module.exports = { parseArgs, HELP, resolveHelp, HELP_SUMMARY, HELP_SESSION_SUMMARY };

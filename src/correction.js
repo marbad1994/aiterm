@@ -115,6 +115,12 @@ function preserveCase(original, corrected) {
 }
 
 async function correct({ input, glossary, signal: _unused }) {
+  // /-prefixed and "shmakk ..." commands are shmakk self-commands.
+  // They should never reach the correction engine — bail out immediately.
+  if (/^\//.test(input) || /^shmakk\s/i.test(input)) {
+    return { category: 'not_a_correction', proposed: null, safety: 'uncertain', reason: 'shmakk self-command prefix — not a shell command' };
+  }
+
   // Pre-filter natural language
   if (looksLikeNaturalLanguage(input)) {
     return { category: 'not_a_correction', proposed: null, safety: 'uncertain', reason: 'looks like natural language' };

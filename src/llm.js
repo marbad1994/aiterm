@@ -4,7 +4,7 @@ try { OpenAI = require('openai'); } catch { OpenAI = null; }
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
-const { getCurrentEndpoint, getCurrentEndpointName, getModelRegistry } = require('./endpoints');
+const { getCurrentEndpoint, getCurrentEndpointName, getModelRegistry, supportsVision } = require('./endpoints');
 
 function parseHeaders(s) {
   const out = {};
@@ -536,4 +536,4 @@ function getDeepSeekOptions(taskType) {
   };
 }
 
-module.exports = { makeClient, modelFor, isConfigured, ensureModelRuntime, getDeepSeekOptions, isDeepSeekProvider };
+module.exports = { makeClient, modelFor, isConfigured, ensureModelRuntime, getDeepSeekOptions, isDeepSeekProvider, supportsVision };

@@ -2,14 +2,17 @@
 // Falls back silently if notify-send is not available or no notification
 // daemon is running.
 
-const { execFile } = require('child_process');
+const { execFile, execFileSync } = require('child_process');
+const { existsSync } = require('fs');
 
 const NOTIFY_BIN = 'notify-send';
 
 function available() {
   try {
-    const { execFileSync } = require('child_process');
-    execFileSync('which', [NOTIFY_BIN], { stdio: 'ignore' });
+    // Prefer direct path check; fall back to `command -v` if not at known paths
+    if (existsSync('/usr/bin/notify-send')) return true;
+    if (existsSync('/usr/local/bin/notify-send')) return true;
+    execFileSync('command', ['-v', NOTIFY_BIN], { stdio: 'ignore' });
     return true;
   } catch {
     return false;

@@ -15,6 +15,7 @@ function buildSystemPrompt({
   mcpToolHint = null,
   userRulesText = null,
   userMemoryText = null,
+  supportsVision = false,
 }) {
   return `You are an expert AI coding assistant running inside shmakk.
 
@@ -65,12 +66,13 @@ Tool Call Format:
 
 Available Tools:
 - list_dir: list files/directories
-- read_file: read file contents
+- read_file: read file contents (text or images)
 - write_file: create or overwrite a file
 - make_dir: create a directory
 - run: execute shell commands
 - web_search: search the web
 - fetch_url: fetch a URL
+${supportsVision ? '\nIf images are included in tool results (e.g. read_file on a PNG, or MCP tools that return visuals), you can describe and analyze what you see in them.\n' : ''}
 
 Path Rules:
 - Always use relative paths resolved against \`${roots[0]}\`.

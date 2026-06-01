@@ -7,7 +7,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { makeClient, modelFor, isConfigured, getDeepSeekOptions } = require('./llm');
+const { makeClient, modelFor, isConfigured, getDeepSeekOptions, supportsVision } = require('./llm');
 const {
   sanitizeAssistantContent,
   isLeakedToolMarkup,
@@ -87,13 +87,16 @@ function clearTaskJournal(root) {
 const { renderBlock } = require('./markdown');
 
 // Tiny spinner so the user sees "the agent is thinking" while we wait on
-// the model. Erased when stop() is called.
+// the model. Erased when stop() is called. Also updates the terminal tab
+// title so you can see agent activity even when looking at another tab.
 function startSpinner(write, label = 'thinking') {
   const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
   let i = 0; let line = '';
   const draw = () => {
     line = `\x1b[2m${frames[i % frames.length]} ${label}…\x1b[0m`;
     write('\r' + line);
+    // Update terminal tab/window title so activity is visible from other tabs
+    write(`\x1b]0;${frames[i % frames.length]} ${label} — shmakk\x07`);
     i++;
   };
   draw();
@@ -101,6 +104,8 @@ function startSpinner(write, label = 'thinking') {
   return () => {
     clearInterval(tm);
     write('\r' + ' '.repeat(line.replace(/\x1b\[[0-9;]*m/g, '').length + 2) + '\r\r');
+    // Clear the terminal title — shell will restore normal title on next prompt
+    write('\x1b]0;\x07');
   };
 }
 
@@ -251,6 +256,7 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
     mcpToolHint,
     userRulesText,
     userMemoryText,
+    supportsVision: supportsVision(),
   });
 
   const boundedHistory = trimForContext(history, runtimeProfile.historyEntries);
@@ -292,14 +298,22 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
   // Tool loop. Streams content as it arrives; prints each tool call.
   let producedAnything = false;
   const runState = { _dsmlLeakRetries: 0 };
+  let taskSpinnerStop = null;
+  const ensureSpinner = () => {
+    if (!taskSpinnerStop) taskSpinnerStop = startSpinner(write, 'thinking');
+  };
+  const stopTaskSpinner = () => {
+    if (taskSpinnerStop) { taskSpinnerStop(); taskSpinnerStop = null; }
+  };
   for (let i = 0; i < dynamicToolBudget; i++) {
-    if (signal && signal.aborted) return messages.slice(1);
+    if (signal && signal.aborted) { stopTaskSpinner(); return messages.slice(1); }
 
     // Stream the response so the user sees text as it generates.
     const cacheKey = promptCacheEnabled ? promptCache.makeKey({ model: modelFor('agent'), messages, toolChoice: 'auto' }) : null;
     if (promptCacheEnabled && cacheKey) {
       const hit = promptCache.get(roots[0], cacheKey);
       if (hit && hit.content) {
+        stopTaskSpinner();
         write(dim('[shmakk] prompt cache hit', colors) + '\n');
         write(highlightCodeBlocks(hit.content, colors));
         if (!hit.content.endsWith('\n')) write('\n');
@@ -309,7 +323,7 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
       }
     }
 
-    const stop = startSpinner(write, i === 0 ? 'thinking' : 'continuing');
+    ensureSpinner();
     const allTools = mcpManager ? [...TOOLS, ...mcpManager.getToolDefinitions()] : TOOLS;
     let stream;
     try {
@@ -324,14 +338,13 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
         ...getDeepSeekOptions('tool_loop'),
       }, { signal });
     } catch (e) {
-      stop();
+      stopTaskSpinner();
       throw e;
     }
 
     let content = '';
     let reasoningContent = '';
     const toolCalls = []; // [{id, type:'function', function:{name, arguments}}]
-    let spinnerStopped = false;
     let streamingContentOk = true;  // flipped to false on leak
     try {
       for await (const chunk of stream) {
@@ -370,7 +383,6 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
           reasoningContent += delta.reasoning_content;
         }
         if (delta.tool_calls) {
-          if (!spinnerStopped) { stop(); spinnerStopped = true; }
           for (const tc of delta.tool_calls) {
             const idx = tc.index ?? 0;
             if (!toolCalls[idx]) toolCalls[idx] = { id: tc.id || '', type: 'function', function: { name: '', arguments: '' } };
@@ -382,7 +394,8 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
         }
       }
     } finally {
-      if (!spinnerStopped) stop();
+      // Spinner runs continuously from loop start — stopped below when
+      // we're about to show output or dispatch tools that may need input.
     }
 
     // ── DSML leak detection (after stream completes) ────────────────────
@@ -427,6 +440,7 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
       // Max retries exceeded — strip and show what we can.
       content = sanitized.visibleText;
       if (!content) {
+        stopTaskSpinner();
         write(dim('[shmakk] response contained only leaked tool markup — blocked.', colors) + '\n');
         clearTaskJournal(roots[0]);
         return messages.slice(1);
@@ -477,6 +491,7 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
 
     // No tools → done.
     if (!normalizedToolCalls.length) {
+      stopTaskSpinner();
       if (content) {
         write(renderBlock(content, { enabled: markdown, colors }));
         if (!content.endsWith('\n')) write('\n');
@@ -497,6 +512,7 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
     // Dispatch tool calls.
     // Reads/lists are noisy — collect them silently and show a single dim summary.
     // Writes, edits, runs, and errors always print clearly.
+    stopTaskSpinner();
     const SILENT_TOOLS = new Set(['read_file', 'list_dir', 'web_search', 'fetch_url']);
     let iterProgress = false;
     let silentReads = [];
@@ -534,7 +550,34 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
         write(dim(`→ ${c.function.name}(${shortArgs(args)})${summary ? ' — ' + summary : ''}`, colors) + '\n');
       }
 
-      messages.push({ role: 'tool', tool_call_id: c.id, content: JSON.stringify(result).slice(0, 8000) });
+      // Build tool result message. If the result includes images with real
+      // base64 data AND the current endpoint has `vision: true`, send them as
+      // vision content blocks in a follow-up user message. Otherwise just
+      // include image metadata in the text. Keep the tool message text-only.
+      const toolImages = Array.isArray(result.images) ? result.images.filter((img) => img.data) : [];
+      const toolText = result.content || '';
+      const toolMeta = Object.fromEntries(
+        Object.entries(result || {}).filter(([k]) => !['content', 'images', 'error', 'isRetryable'].includes(k)),
+      );
+      let toolContent = (toolText + (Object.keys(toolMeta).length ? ' ' + JSON.stringify(toolMeta) : '')).trim();
+      if (toolImages.length > 0 && !supportsVision()) {
+        // Endpoint doesn't support vision — include image metadata as text
+        const imgDesc = toolImages.map((img, i) => `[Image #${i + 1}: ${img.mimeType}, base64=${img.dataLength} chars${img.truncated ? ', truncated' : ''}]`).join(', ');
+        toolContent = toolContent ? `${toolContent} ${imgDesc}` : imgDesc;
+      }
+      messages.push({ role: 'tool', tool_call_id: c.id, content: toolContent.slice(0, 8000) });
+      if (toolImages.length > 0 && supportsVision()) {
+        messages.push({
+          role: 'user',
+          content: [
+            { type: 'text', text: `[Images returned by ${c.function.name}${toolImages.some((img) => img.truncated) ? ' (some truncated to ~2MB base64)' : ''}]` },
+            ...toolImages.map((img) => ({
+              type: 'image_url',
+              image_url: { url: `data:${img.mimeType};base64,${img.data}`, detail: 'auto' },
+            })),
+          ],
+        });
+      }
       producedAnything = true;
       persistJournal('running');
       if (signal && signal.aborted) return messages.slice(1);
@@ -553,6 +596,7 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
     }
 
     if (repeatedSignatureCount >= runtimeProfile.stallRepeat && noProgressRepeats >= 2) {
+      stopTaskSpinner();
       break;
     }
   }
@@ -589,6 +633,7 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
     }
   } catch {}
 
+  stopTaskSpinner();
   write(dim('[shmakk] paused after several tool rounds. Resume later continues from task journal; try `shmakk --reset` to clear.', colors) + '\n');
   persistJournal('paused');
   return messages.slice(1);

@@ -1,4 +1,4 @@
-const { parseArgs, HELP } = require('./cli');
+const { parseArgs, HELP, resolveHelp } = require('./cli');
 const { normalizeProfile, resolveProfile } = require('./profiles');
 const { applyEndpoint, getCurrentEndpoint, getCurrentEndpointName } = require('./endpoints');
 const { ensureModelRuntime } = require('./llm');
@@ -66,7 +66,7 @@ async function main() {
   }
 
   if (opts.help) {
-    process.stdout.write(HELP);
+    process.stdout.write(resolveHelp(opts.helpCategory));
     process.exit(0);
   }
 
@@ -204,6 +204,15 @@ async function main() {
   if (opts.ttsVoice) process.env.SHMAKK_TTS_VOICE = opts.ttsVoice;
 
   const { start } = require('./orchestrator');
+
+  // Refuse to nest sessions: launching shmakk inside shmakk would
+  // create a recursive PTY tree with no benefit.
+  if (process.env.SHMAKK === '1') {
+    process.stderr.write('[shmakk] already inside an shmakk session (SHMAKK=1).\n');
+    process.stderr.write('[shmakk] use --help to see in-session commands, or exit the current session first.\n');
+    process.exit(1);
+  }
+
   const exitCode = await start(opts);
   process.exit(exitCode);
 }

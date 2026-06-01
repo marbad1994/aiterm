@@ -110,12 +110,14 @@ const SELF_COMMANDS = [
   },
 
   // ── Session ──
+  // NOTE: Bare "status", "stats" etc. are NOT intercepted — they may be
+  // real shell commands. Use /status, /stats, shmakk status, etc. instead.
   {
-    patterns: [/^(?:shmakk\s+)?status$/i],
+    patterns: [/^status$/i],
     action: 'status',
   },
   {
-    patterns: [/^(?:show\s+)?stats$/i, /^session\s+stats$/i],
+    patterns: [/^stats$/i, /^session\s+stats$/i],
     action: 'stats',
   },
   {
@@ -164,8 +166,8 @@ const SELF_COMMANDS = [
   },
   {
     patterns: [
-      /^(?:show\s+)?last\s+sessions?$/i,
-      /^recent\s+sessions?$/i,
+      /^(?:show\s+)?(?:last\s+|recent\s+)?sessions?$/i,
+      /^sessions?$/i,
     ],
     action: 'last-sessions',
   },
@@ -320,6 +322,22 @@ const SELF_COMMANDS = [
     action: 'disable-yes-files',
   },
 
+  // ── Notify ──
+  {
+    patterns: [
+      /^(?:enable|turn\s+on)\s+notify$/i,
+      /^notify\s+on$/i,
+    ],
+    action: 'enable-notify',
+  },
+  {
+    patterns: [
+      /^(?:disable|turn\s+off|no)\s+notify$/i,
+      /^notify\s+off$/i,
+    ],
+    action: 'disable-notify',
+  },
+
   // ── Colors ──
   {
     patterns: [
@@ -399,20 +417,65 @@ const SELF_COMMANDS = [
   },
 ];
 
+// Self-command prefixes accepted by the shell:
+//   /cmd          — e.g. /status, /sessions, /compact
+//   shmakk cmd    — e.g. shmakk status, shmakk show sessions
+// Bare words like "status" are NOT intercepted (they go to the shell).
+const SELF_PREFIX_RE = /^\/(.+)$/;
+const SHMAKK_PREFIX_RE = /^shmakk\s+(.+)$/i;
+
+function hasSelfCommandPrefix(input) {
+  const text = String(input || '').trim();
+  return SELF_PREFIX_RE.test(text) || SHMAKK_PREFIX_RE.test(text);
+}
+
+function stripSelfCommandPrefix(input) {
+  const text = String(input || '').trim();
+  let m = SELF_PREFIX_RE.exec(text);
+  if (m) return m[1].trim();
+  m = SHMAKK_PREFIX_RE.exec(text);
+  if (m) return m[1].trim();
+  return text;
+}
+
 function matchSelfCommand(input) {
   const text = String(input || '').trim();
   if (!text) return { matched: false };
 
-  for (const entry of SELF_COMMANDS) {
-    for (const pattern of entry.patterns) {
-      const m = pattern.exec(text);
-      if (m) {
-        return {
-          matched: true,
-          action: entry.action,
-          arg: entry.needsArg && m[1] ? m[1].trim() : null,
-          confirm: !!entry.confirm,
-        };
+  // Try matching with prefix stripped first (for /status, shmakk status, etc.)
+  const stripped = stripSelfCommandPrefix(text);
+  if (stripped !== text) {
+    for (const entry of SELF_COMMANDS) {
+      for (const pattern of entry.patterns) {
+        const m = pattern.exec(stripped);
+        if (m) {
+          return {
+            matched: true,
+            action: entry.action,
+            arg: entry.needsArg && m[1] ? m[1].trim() : null,
+            confirm: !!entry.confirm,
+          };
+        }
+      }
+    }
+    return { matched: false };
+  }
+
+  // Multi-word natural-language commands (no prefix needed).
+  // Single bare words are NOT matched — they could be real shell commands.
+  const wordCount = text.split(/\s+/).length;
+  if (wordCount >= 2) {
+    for (const entry of SELF_COMMANDS) {
+      for (const pattern of entry.patterns) {
+        const m = pattern.exec(text);
+        if (m) {
+          return {
+            matched: true,
+            action: entry.action,
+            arg: entry.needsArg && m[1] ? m[1].trim() : null,
+            confirm: !!entry.confirm,
+          };
+        }
       }
     }
   }
@@ -422,6 +485,9 @@ function matchSelfCommand(input) {
 
 // ctx is optional: { opts, HELP, setColors }
 function executeSelfCommand(match, write, ctx = {}) {
+  // Update terminal tab title so self-command activity is visible from other tabs
+  const label = match.action.replace(/-/g, ' ');
+  write(`\x1b]0;${label} — shmakk\x07`);
   const ctl = require('./control');
   const opts = ctx.opts || {};
 
@@ -429,7 +495,7 @@ function executeSelfCommand(match, write, ctx = {}) {
 
     // ── Help ──
     case 'show-help': {
-      const helpText = ctx.HELP || '[shmakk] help text not available';
+      const helpText = ctx.HELP_SESSION_SUMMARY || ctx.HELP_SUMMARY || ctx.HELP || '[shmakk] help text not available';
       write(helpText.replace(/\n/g, '\r\n'));
       break;
     }
@@ -803,6 +869,18 @@ function executeSelfCommand(match, write, ctx = {}) {
       break;
     }
 
+    // ── Notify ──
+    case 'enable-notify': {
+      if (ctx.opts) ctx.opts.notify = true;
+      write('[shmakk] desktop notifications enabled\r\n');
+      break;
+    }
+    case 'disable-notify': {
+      if (ctx.opts) ctx.opts.notify = false;
+      write('[shmakk] desktop notifications disabled\r\n');
+      break;
+    }
+
     // ── Colors ──
     case 'enable-colors': {
       if (ctx.opts) ctx.opts.colors = true;
@@ -858,6 +936,8 @@ function executeSelfCommand(match, write, ctx = {}) {
     default:
       write(`[shmakk] unknown self-command: ${match.action}\r\n`);
   }
+  // Clear terminal title — shell will restore normal title on next prompt
+  write('\x1b]0;\x07');
 }
 
-module.exports = { matchSelfCommand, executeSelfCommand, SELF_COMMANDS };
+module.exports = { matchSelfCommand, executeSelfCommand, hasSelfCommandPrefix, stripSelfCommandPrefix, SELF_COMMANDS };

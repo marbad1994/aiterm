@@ -393,10 +393,10 @@ const test = (name, fn) => tests.push({ name, fn });
   });
 
   test('self-commands: destructive commands have confirm flag', () => {
-    const r1 = matchSelfCommand('compact');
+    const r1 = matchSelfCommand('/compact');
     assert.strictEqual(r1.matched, true);
     assert.strictEqual(r1.confirm, true);
-    const r2 = matchSelfCommand('reset');
+    const r2 = matchSelfCommand('/reset');
     assert.strictEqual(r2.matched, true);
     assert.strictEqual(r2.confirm, true);
   });
@@ -417,7 +417,7 @@ const test = (name, fn) => tests.push({ name, fn });
   });
 
   test('self-commands: matches "help" and "show help"', () => {
-    assert.strictEqual(matchSelfCommand('help').action, 'show-help');
+    assert.strictEqual(matchSelfCommand('/help').action, 'show-help');
     assert.strictEqual(matchSelfCommand('show help').action, 'show-help');
     assert.strictEqual(matchSelfCommand('what can you do').action, 'show-help');
   });
@@ -687,7 +687,7 @@ const test = (name, fn) => tests.push({ name, fn });
 
   test('self-commands: matches "show rules", "rules", "my rules"', () => {
     assert.strictEqual(matchSelfCommand('show rules').action, 'show-rules');
-    assert.strictEqual(matchSelfCommand('rules').action, 'show-rules');
+    assert.strictEqual(matchSelfCommand('/rules').action, 'show-rules');
     assert.strictEqual(matchSelfCommand('my rules').action, 'show-rules');
     assert.strictEqual(matchSelfCommand('what are my rules?').action, 'show-rules');
   });
@@ -827,7 +827,7 @@ const test = (name, fn) => tests.push({ name, fn });
 
   test('self-commands: memory commands match', () => {
     assert.strictEqual(matchSelfCommand('show memory').action, 'show-memory');
-    assert.strictEqual(matchSelfCommand('memory').action, 'show-memory');
+    assert.strictEqual(matchSelfCommand('/memory').action, 'show-memory');
     assert.strictEqual(matchSelfCommand('my memory').action, 'show-memory');
     const f = matchSelfCommand('forget the old jwt setup');
     assert.strictEqual(f.action, 'forget-memory');
@@ -988,7 +988,7 @@ const test = (name, fn) => tests.push({ name, fn });
   test('self-commands: matches "list workflows" / "workflows"', () => {
     assert.strictEqual(matchSelfCommand('list workflows').action, 'list-workflows');
     assert.strictEqual(matchSelfCommand('show workflows').action, 'list-workflows');
-    assert.strictEqual(matchSelfCommand('workflows').action, 'list-workflows');
+    assert.strictEqual(matchSelfCommand('/workflows').action, 'list-workflows');
   });
 
   test('self-commands: matches "run workflow X" with arg', () => {
@@ -1000,7 +1000,7 @@ const test = (name, fn) => tests.push({ name, fn });
   test('self-commands: matches "list agents" / "specialists"', () => {
     assert.strictEqual(matchSelfCommand('list agents').action, 'list-agents');
     assert.strictEqual(matchSelfCommand('show specialists').action, 'list-agents');
-    assert.strictEqual(matchSelfCommand('agents').action, 'list-agents');
+    assert.strictEqual(matchSelfCommand('/agents').action, 'list-agents');
   });
 }
 
@@ -1021,15 +1021,16 @@ const test = (name, fn) => tests.push({ name, fn });
   });
 
   test('self-commands: representative inputs match before correction would run', () => {
-    // These are inputs that fish/bash would reject as "command not found".
-    // The exit handler checks matchSelfCommand FIRST; if matched, correction
-    // and agent are both skipped. We just verify the patterns trigger.
+    // Single-word commands use / prefix or shmakk prefix.
+    // Multi-word natural language works without a prefix.
+    // Bare words like "help" or "status" are NOT intercepted (they go to the shell).
     const inputs = [
-      'help', 'show help', 'list skills', 'skills', 'show plan', 'stats',
-      'status', 'mcp status', 'compact', 'reset', 'show rules', 'rules',
-      'review edits', 'show changes', 'enable review', 'disable review',
-      'colors on', 'colors off', 'debug on', 'debug off',
-      'set model to gpt-4o', 'set base url to http://x.local', 'auto mode',
+      '/help', 'show help', 'list skills', '/skills', 'show plan',
+      '/stats', '/status', 'mcp status', '/compact', '/reset',
+      'show rules', '/rules', 'review edits', 'show changes',
+      'enable review', 'disable review', 'colors on', 'colors off',
+      'debug on', 'debug off', 'set model to gpt-4o',
+      'set base url to http://x.local', 'auto mode',
     ];
     for (const i of inputs) {
       const m = matchSelfCommand(i);
@@ -1047,6 +1048,42 @@ const test = (name, fn) => tests.push({ name, fn });
       const m = matchSelfCommand(i);
       assert.strictEqual(m.matched, false, `"${i}" should not match a self-command`);
     }
+  });
+
+  test('self-commands: /-prefixed unknown commands are recognized as shmakk-addressed', () => {
+    // /-prefixed commands that don't match a known self-command should
+    // still be identified as shmakk-addressed so the corrector skips them.
+    // This is tested via the correction engine directly.
+    const { correct } = require('../src/correction');
+    // Verify the corrector bails out for /-prefixed input
+    const r1 = matchSelfCommand('/some-unknown-command');
+    assert.strictEqual(r1.matched, false, 'unknown /cmd should not match a self-command');
+    // But the corrector should reject it (tested async below)
+  });
+}
+
+// ── corrector: /-prefix bypass ─────────────────────────────────────────────
+{
+  const { correct } = require('../src/correction');
+
+  test('corrector: /-prefixed commands are skipped', async () => {
+    // No glossary needed — the guard runs before glossary access
+    const r = await correct({ input: '/status', glossary: null });
+    assert.strictEqual(r.category, 'not_a_correction');
+    assert.ok(r.reason.includes('shmakk self-command'));
+  });
+
+  test('corrector: shmakk-prefixed commands are skipped', async () => {
+    const r = await correct({ input: 'shmakk compact', glossary: null });
+    assert.strictEqual(r.category, 'not_a_correction');
+    assert.ok(r.reason.includes('shmakk self-command'));
+  });
+
+  test('corrector: normal commands still reach correction logic', async () => {
+    const r = await correct({ input: 'git statsu', glossary: null });
+    // Without a glossary it'll fail at the glossary check, but not at the / prefix guard
+    assert.strictEqual(r.category, 'not_a_correction');
+    assert.ok(r.reason.includes('no glossary'));
   });
 }
 
