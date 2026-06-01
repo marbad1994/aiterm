@@ -13,8 +13,8 @@ function getSize() {
 
 const VOICE_HOTKEY = 0x0f; // Ctrl+O — triggers voice recording
 
-function startSession({ debug = false, voiceEnabled = false } = {}) {
-  const shell = detectShell();
+function startSession({ debug = false, voiceEnabled = false, shellOverride = null } = {}) {
+  const shell = detectShell(shellOverride);
   const cfg = configureForShell(shell.name);
   const { cols, rows } = getSize();
 

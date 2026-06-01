@@ -20,7 +20,7 @@ const { runTeam, looksMultiDomain } = require('./team');
 const { addPlanTasks, markTaskComplete, markTaskSkipped } = require('./task-file');
 const { captureGitSha, runPostPlanReview } = require('./code-reviewer');
 const sessionSearch = require('./session-search');
-const { HELP } = require('./cli');
+const { HELP, HELP_SUMMARY, HELP_SESSION_SUMMARY } = require('./cli');
 const audit = require('./audit');
 const { setMaxListeners } = require('events');
 
@@ -163,13 +163,11 @@ function makeToolConfirm(opts, ask, out, getAbort) {
 }
 
 async function runOneSession(opts, registerSession) {
-  const session = startSession({ debug: opts.debug, voiceEnabled: !!opts.voice });
+  const session = startSession({ debug: opts.debug, voiceEnabled: !!opts.voice, shellOverride: opts.shell });
   let colorsEnabled = opts.colors !== false;
   let markdownEnabled = opts.markdown !== false;
   const out = (s) => session.stdoutWrite(colorsEnabled ? s : stripAnsi(s));
-  const ask = makePrompter(session, out, {
-    onNotify: opts.notify ? (summary, body) => notify(summary, body) : null,
-  });
+  const ask = makePrompter(session, out, opts);
   const glossary = loadGlossary();
   // Workspace tracking: explicit --workspace is "pinned"; otherwise cwd
   // floats with the inner shell's `cd`. When both pinned and cwd differ,
@@ -373,6 +371,8 @@ async function runOneSession(opts, registerSession) {
       executeSelfCommand(voiceSelfCmd, out, {
         opts,
         HELP,
+        HELP_SUMMARY,
+        HELP_SESSION_SUMMARY,
         setColors: (v) => { colorsEnabled = v; },
       });
       return;
@@ -672,9 +672,18 @@ async function runOneSession(opts, registerSession) {
         executeSelfCommand(selfCmd, out, {
           opts,
           HELP,
+          HELP_SUMMARY,
+          HELP_SESSION_SUMMARY,
           setColors: (v) => { colorsEnabled = v; },
         });
         session.childWrite('\r');
+        return;
+      }
+      // /-prefixed and "shmakk ..." commands that didn't match a known
+      // self-command are invalid shmakk commands. Don't send them to the
+      // correction engine — the user was explicitly addressing shmakk.
+      if (/^\//.test(lastCmd) || /^shmakk\s/i.test(lastCmd)) {
+        flushPending();
         return;
       }
     }
