@@ -27,6 +27,78 @@ function buildHeaders(customHeaders, registry) {
   return headers;
 }
 
+// ── Retry helper ───────────────────────────────────────────────────────────
+// Shared retry with exponential backoff + jitter for 429 / 503 / 502.
+// Also enforces a minimum gap between requests within this process so that
+// rapid tool-call loops don't pile onto the rate limit immediately.
+
+const RETRYABLE = new Set([429, 503, 502, 504]);
+const MAX_RETRIES = 4;
+const BASE_DELAY_MS = 1000;
+const MAX_DELAY_MS = 30000;
+const MIN_GAP_MS = 600; // floor between subsequent fetches in this process
+
+let _lastReq = 0;
+
+function sleepMs(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function retryDelay(attempt, retryAfterHeader) {
+  if (retryAfterHeader) {
+    const parsed = Number(retryAfterHeader);
+    if (!Number.isNaN(parsed) && parsed > 0) return Math.min(parsed * 1000, MAX_DELAY_MS);
+  }
+  const exp = Math.min(BASE_DELAY_MS * Math.pow(2, attempt), MAX_DELAY_MS);
+  const jitter = exp * (0.5 + Math.random() * 0.5); // 50%–100% of exponential
+  return Math.round(jitter);
+}
+
+async function fetchWithBackoff(url, init, providerLabel) {
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    // Abort signal check first
+    if (init.signal?.aborted) {
+      const err = new Error('aborted');
+      err.name = 'AbortError';
+      throw err;
+    }
+
+    // Enforce minimum request gap
+    const now = Date.now();
+    const wait = MIN_GAP_MS - (now - _lastReq);
+    if (wait > 0) await sleepMs(wait);
+
+    let res;
+    try {
+      _lastReq = Date.now();
+      res = await fetch(url, init);
+    } catch (e) {
+      if (attempt < MAX_RETRIES && (e.name === 'TypeError' || e.code === 'ECONNRESET' || e.code === 'ETIMEDOUT')) {
+        await sleepMs(retryDelay(attempt, null));
+        continue;
+      }
+      throw e;
+    }
+
+    if (res.ok) return res;
+
+    const status = res.status;
+    const retryAfter = res.headers.get('retry-after');
+    const isRetryable = RETRYABLE.has(status);
+
+    if (isRetryable && attempt < MAX_RETRIES) {
+      const errText = await res.text().catch(() => '');
+      const delay = retryDelay(attempt, retryAfter);
+      process.stderr.write(`[shmakk] ${providerLabel} ${status} (attempt ${attempt + 1}/${MAX_RETRIES + 1}), retrying in ${(delay / 1000).toFixed(1)}s…\n`);
+      await sleepMs(delay);
+      continue;
+    }
+
+    const errText = await res.text().catch(() => '');
+    throw new Error(`${providerLabel} API ${status}: ${errText.slice(0, 500)}`);
+  }
+}
+
 function envForProvider() {
   // Check active endpoint first (allows hotswap)
   const activeEndpoint = getCurrentEndpoint();
@@ -56,7 +128,7 @@ function envForProvider() {
 function isConfigured() {
   const cfg = envForProvider();
   if (recommendationMode()) return Object.keys(getModelRegistry().models).length > 0;
-  if (cfg.provider === 'anthropic') return !!cfg.apiKey;
+  if (cfg.provider === 'anthropic') return true;  // claude-proxy handles auth via OAuth
   if (cfg.provider === 'codex') return true;  // codex-proxy handles auth via OAuth
   return (!!cfg.baseURL || cfg.provider === 'openai') && !!OpenAI;
 }
@@ -65,11 +137,65 @@ function makeOpenAIClient(cfg) {
   if (!OpenAI) throw new Error('openai sdk not installed');
   const baseURL = cfg.baseURL || (cfg.provider === 'openai' ? 'https://local:8095/v1' : undefined);
   if (!baseURL) throw new Error('SHMAKK_BASE_URL is required for OpenAI-compatible providers');
-  return new OpenAI({
+  const client = new OpenAI({
     baseURL,
     apiKey: cfg.apiKey || process.env.OPENAI_API_KEY || 'not-needed',
     defaultHeaders: buildHeaders(cfg.headers, cfg.registry),
   });
+  const rawCreate = client.chat.completions.create.bind(client.chat.completions);
+  client.chat.completions.create = async (params, options = {}) => {
+    try {
+      return await rawCreate(params, options);
+    } catch (e) {
+      if (!hasVisionContent(params?.messages) || !isImageUrlSchemaError(e)) throw e;
+      process.stderr.write('[shmakk] endpoint rejected image_url blocks; retrying with image metadata as text\n');
+      return rawCreate({ ...params, messages: downgradeVisionMessages(params.messages) }, options);
+    }
+  };
+  return client;
+}
+
+function hasVisionContent(messages) {
+  return (messages || []).some((message) => {
+    return Array.isArray(message?.content) && message.content.some((part) => {
+      return part && typeof part === 'object' && (part.type === 'image_url' || part.image_url);
+    });
+  });
+}
+
+function imageUrlSummary(part) {
+  const url = String(part?.image_url?.url || part?.url || '');
+  const mime = url.match(/^data:([^;]+);base64,/)?.[1] || 'image';
+  const b64 = url.match(/^data:[^;]+;base64,(.*)$/)?.[1] || '';
+  const size = b64 ? `, base64=${b64.length} chars` : '';
+  const detail = part?.image_url?.detail || part?.detail;
+  return `[Image omitted: ${mime}${size}${detail ? `, detail=${detail}` : ''}]`;
+}
+
+function contentArrayToText(content) {
+  return content.map((part) => {
+    if (typeof part === 'string') return part;
+    if (!part || typeof part !== 'object') return '';
+    if (part.type === 'text') return String(part.text || '');
+    if (part.type === 'image_url' || part.image_url) return imageUrlSummary(part);
+    return JSON.stringify(part);
+  }).filter(Boolean).join('\n');
+}
+
+function downgradeVisionMessages(messages) {
+  return (messages || []).map((message) => {
+    if (!Array.isArray(message?.content)) return message;
+    return {
+      ...message,
+      content: contentArrayToText(message.content),
+    };
+  });
+}
+
+function isImageUrlSchemaError(err) {
+  const status = err?.status || err?.response?.status || 0;
+  const message = String(err?.message || err?.error?.message || err?.response?.data || '');
+  return status >= 400 && status < 500 && /\bimage_url\b/i.test(message) && /(unknown variant|expected|deserialize|invalid)/i.test(message);
 }
 
 function makeProviderClient(cfg) {
@@ -82,6 +208,18 @@ function makeClient() {
   const cfg = envForProvider();
   if (recommendationMode()) return makeRoutingClient(cfg);
   return makeProviderClient(cfg);
+}
+
+function makeClientForEndpoint(name) {
+  const registry = getModelRegistry();
+  const selected = name === 'main' ? registry.main : name === 'fast' ? registry.fast : name;
+  if (!selected || !registry.models[selected]) return null;
+  const cfg = configFromModelEntry(selected, registry.models[selected]);
+  return {
+    name: selected,
+    model: cfg.model || selected,
+    client: makeProviderClient(cfg),
+  };
 }
 
 function modelFor() {
@@ -208,7 +346,7 @@ async function ensureModelRuntime() {}
 
 // ── Codex (Responses API) compat client ────────────────────────────────────
 // Translates OpenAI chat.completions format to/from the Codex Responses API
-// via the codex-proxy (mitmdump on :8095 -> chatgpt.com/backend-api/codex/responses).
+// via the anthprox FastAPI (:8256) -> mitmdump (:8095) -> chatgpt.com.
 
 function splitCodexSystem(messages) {
   let instructions = '';
@@ -265,37 +403,121 @@ function codexToolChoice(choice) {
   return 'auto';
 }
 
-function fromCodexResponse(model, data) {
-  const message = { role: 'assistant', content: '', tool_calls: undefined };
-  const calls = [];
-  for (const item of data.output || []) {
-    if (item.type === 'message') {
-      const content = item.content || [];
-      if (typeof content === 'string') {
-        message.content += content;
-      } else if (Array.isArray(content)) {
-        for (const part of content) {
-          if (part.type === 'output_text') message.content += part.text || '';
-        }
-      }
-    }
-    if (item.type === 'function_call') {
-      calls.push({
-        id: item.call_id,
-        type: 'function',
-        function: { name: item.name, arguments: item.arguments || '{}' },
-      });
-    }
+
+// ── SSE parsing helpers (shared by streaming + buffered paths) ──────────
+
+function codexSSEParseState() {
+  return {
+    content: '',
+    callMap: new Map(),  // item_id -> { call_id, name, arguments }
+  };
+}
+
+function codexSSEFeed(state, line) {
+  // Processes one SSE data line (without the 'data: ' prefix).
+  // Returns a content delta string if text was produced, else null.
+  if (!line) return null;
+  let evt;
+  try { evt = JSON.parse(line); } catch { return null; }
+
+  if (evt.type === 'response.output_text.delta') {
+    state.content += evt.delta || '';
+    return evt.delta || '';
   }
+  if (evt.type === 'response.output_item.added' && evt.item?.type === 'function_call') {
+    state.callMap.set(evt.item.id, {
+      call_id: evt.item.call_id,
+      name: evt.item.name,
+      arguments: evt.item.arguments || '',
+    });
+  } else if (evt.type === 'response.function_call_arguments.delta' && evt.item_id) {
+    const entry = state.callMap.get(evt.item_id);
+    if (entry) entry.arguments += evt.delta || '';
+  } else if (evt.type === 'response.function_call_arguments.done' && evt.item_id) {
+    const entry = state.callMap.get(evt.item_id);
+    if (entry) entry.arguments = evt.arguments || entry.arguments;
+  }
+  return null;
+}
+
+function codexSSEBuildCompletion(model, state) {
+  const calls = [...state.callMap.values()].map((c) => ({
+    id: c.call_id,
+    type: 'function',
+    function: { name: c.name, arguments: typeof c.arguments === 'string' ? c.arguments : JSON.stringify(c.arguments) },
+  }));
+  const message = { role: 'assistant', content: state.content, tool_calls: undefined };
   if (calls.length) message.tool_calls = calls;
   return {
-    id: data.id,
+    id: 'codex-' + Date.now(),
     object: 'chat.completion',
     model,
     choices: [{ index: 0, message, finish_reason: 'stop' }],
-    usage: data.usage,
   };
 }
+
+function codexSSEBuildToolCallChunks(state) {
+  // Build OpenAI-format tool_call delta chunks for streaming consumers.
+  const calls = [...state.callMap.values()];
+  if (!calls.length) return [];
+  return calls.map((c, i) => ({
+    choices: [{
+      index: 0,
+      delta: {
+        tool_calls: [{
+          index: i,
+          id: c.call_id,
+          type: 'function',
+          function: { name: c.name, arguments: c.arguments },
+        }],
+      },
+      finish_reason: null,
+    }],
+  }));
+}
+
+// ── Streaming SSE iterator ─────────────────────────────────────────────
+
+async function* codexStreamIterator(body, model, signal) {
+  const state = codexSSEParseState();
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    while (true) {
+      if (signal?.aborted) break;
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';  // keep incomplete final line
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const delta = codexSSEFeed(state, line.slice(6).replace(/\r$/, ''));
+        if (delta) {
+          yield { choices: [{ index: 0, delta: { content: delta }, finish_reason: null }] };
+        }
+      }
+    }
+
+    // Flush remaining buffer
+    if (buffer.startsWith('data: ')) {
+      codexSSEFeed(state, buffer.slice(6));
+    }
+  } finally {
+    try { reader.releaseLock(); } catch {}
+  }
+
+  // Yield tool calls then stop
+  const toolChunks = codexSSEBuildToolCallChunks(state);
+  for (const chunk of toolChunks) yield chunk;
+  yield { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] };
+}
+
+// ── Codex compat client ─────────────────────────────────────────────────
 
 function makeCodexCompatClient(cfg) {
   return {
@@ -309,19 +531,17 @@ function makeCodexCompatClient(cfg) {
             instructions,
             input,
             store: false,
-            stream: false,  // always collect, then fake-stream if caller wants it
-            max_output_tokens: params.max_tokens || 4096,
+            stream: true,   // Codex API requires stream: true
           };
-          if (params.temperature != null) body.temperature = params.temperature;
-          if (params.top_p != null) body.top_p = params.top_p;
           if (tools.length) {
             body.tools = tools;
             const tc = codexToolChoice(params.tool_choice);
             if (tc) body.tool_choice = tc;
           }
 
-          const base = (cfg.baseURL || 'https://local:8095').replace(/\/+$/, '');
-          const res = await fetch(`${base}/backend-api/codex/responses`, {
+          // Default to the anthprox codex-api FastAPI, not the raw mitmdump.
+          const base = (cfg.baseURL || 'http://localhost:8256').replace(/\/+$/, '');
+          const res = await fetchWithBackoff(`${base}/responses`, {
             method: 'POST',
             signal: options.signal,
             headers: {
@@ -330,11 +550,22 @@ function makeCodexCompatClient(cfg) {
               ...buildHeaders(cfg.headers, cfg.registry),
             },
             body: JSON.stringify(body),
-          });
-          if (!res.ok) throw new Error(`Codex API ${res.status}: ${await res.text().slice(0, 500)}`);
-          const completion = fromCodexResponse(body.model, await res.json());
-          if (params.stream) return fakeOpenAIStreamFromCompletion(completion);
-          return completion;
+          }, 'Codex');
+
+          // Streaming: return an async iterable that yields OpenAI-format chunks
+          // as SSE events arrive from the codex-api.
+          if (params.stream) {
+            return codexStreamIterator(res.body, body.model, options.signal);
+          }
+
+          // Non-streaming: buffer and parse the SSE response into a completion.
+          const raw = await res.text();
+          const state = codexSSEParseState();
+          for (const line of raw.split('\n')) {
+            if (line.startsWith('data: ')) codexSSEFeed(state, line.slice(6).replace(/\r$/, ''));
+          }
+          if (!state.content && !state.callMap.size) throw new Error('Codex API: no response data');
+          return codexSSEBuildCompletion(body.model, state);
         },
       },
     },
@@ -418,29 +649,143 @@ function toOpenAICompletion(model, data) {
   return { id: data.id, object: 'chat.completion', model, choices: [{ index: 0, message, finish_reason: data.stop_reason || 'stop' }] };
 }
 
-async function* fakeOpenAIStreamFromCompletion(completion) {
-  const message = completion.choices?.[0]?.message || {};
-  if (message.content) {
-    yield { choices: [{ index: 0, delta: { content: message.content }, finish_reason: null }] };
+// ── Anthropic SSE helpers ──────────────────────────────────────────────────
+// Anthropic streaming SSE format (via anthprox proxy):
+//   event: content_block_start  /  content_block_delta  /  content_block_stop
+//   event: message_start  /  message_delta  /  message_stop
+//   event: ping
+
+function anthropicSSEParseState() {
+  return {
+    content: '',
+    blocks: new Map(),     // index -> { type, id?, name?, text, input_json }
+    blockOrder: [],
+    stopReason: null,
+    model: null,
+  };
+}
+
+function anthropicSSEFeed(state, eventName, data) {
+  let evt;
+  try { evt = JSON.parse(data); } catch { return null; }
+  const type = evt.type;
+  if (type === 'message_start') {
+    state.model = evt.message?.model;
+  } else if (type === 'content_block_start') {
+    const idx = evt.index;
+    const block = evt.content_block || {};
+    state.blocks.set(idx, { type: block.type, id: block.id, name: block.name, text: '', input_json: '' });
+    state.blockOrder.push(idx);
+  } else if (type === 'content_block_delta') {
+    const block = state.blocks.get(evt.index);
+    if (!block) return null;
+    const delta = evt.delta || {};
+    if (delta.type === 'text_delta') {
+      block.text += delta.text || '';
+      return delta.text || '';
+    } else if (delta.type === 'input_json_delta') {
+      block.input_json += delta.partial_json || '';
+    }
+  } else if (type === 'content_block_stop') {
+    // no-op
+  } else if (type === 'message_delta') {
+    state.stopReason = evt.delta?.stop_reason || null;
   }
-  for (let i = 0; i < (message.tool_calls || []).length; i++) {
-    const tc = message.tool_calls[i];
-    yield {
+  return null;
+}
+
+function anthropicSSEBuildCompletion(state) {
+  const message = { role: 'assistant', content: '', tool_calls: undefined };
+  const calls = [];
+  for (const idx of state.blockOrder) {
+    const block = state.blocks.get(idx);
+    if (!block) continue;
+    if (block.type === 'text' || !block.type) {
+      message.content += block.text;
+    } else if (block.type === 'tool_use') {
+      calls.push({
+        id: block.id,
+        type: 'function',
+        function: { name: block.name, arguments: block.input_json || '{}' },
+      });
+    }
+  }
+  if (calls.length) message.tool_calls = calls;
+  return {
+    id: 'ant-' + Date.now(),
+    object: 'chat.completion',
+    model: state.model || 'claude',
+    choices: [{ index: 0, message, finish_reason: state.stopReason || 'stop' }],
+  };
+}
+
+function anthropicSSEBuildToolCallChunks(state) {
+  const chunks = [];
+  for (const idx of state.blockOrder) {
+    const block = state.blocks.get(idx);
+    if (!block || block.type !== 'tool_use') continue;
+    chunks.push({
       choices: [{
         index: 0,
         delta: {
           tool_calls: [{
-            index: i,
-            id: tc.id,
+            index: 0,
+            id: block.id,
             type: 'function',
-            function: { name: tc.function.name, arguments: tc.function.arguments },
+            function: { name: block.name, arguments: block.input_json || '{}' },
           }],
         },
         finish_reason: null,
       }],
-    };
+    });
   }
-  yield { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] };
+  return chunks;
+}
+
+async function* anthropicStreamIterator(body, model, signal) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  const state = anthropicSSEParseState();
+  let buffer = '';
+  let eventName = '';
+
+  try {
+    while (true) {
+      if (signal?.aborted) break;
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // Parse SSE — Anthropic uses "event:" + "data:" lines, \r\n endings
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line) continue;
+        if (line.startsWith('event: ')) {
+          eventName = line.slice(7).trim();
+        } else if (line.startsWith('data: ')) {
+          // Trim trailing \r that comes from \r\n line endings
+          const payload = line.slice(6).replace(/\r$/, '');
+          const text = anthropicSSEFeed(state, eventName, payload);
+          if (text) {
+            yield { choices: [{ index: 0, delta: { content: text }, finish_reason: null }] };
+          }
+        }
+      }
+    }
+    // Flush remaining buffer
+    const flushPayload = buffer.startsWith('data: ') ? buffer.slice(6).replace(/\r$/, '') : '';
+    if (flushPayload) {
+      anthropicSSEFeed(state, '', flushPayload);
+    }
+  } finally {
+    try { reader.releaseLock(); } catch {}
+  }
+
+  // Yield tool calls then stop
+  const toolChunks = anthropicSSEBuildToolCallChunks(state);
+  for (const chunk of toolChunks) yield chunk;
+  yield { choices: [{ index: 0, delta: {}, finish_reason: state.stopReason || 'stop' }] };
 }
 
 function makeAnthropicCompatClient(cfg) {
@@ -448,13 +793,13 @@ function makeAnthropicCompatClient(cfg) {
     chat: {
       completions: {
         create: async (params, options = {}) => {
-          if (!cfg.apiKey) throw new Error('Anthropic api_key is required');
           const { system, messages } = splitAnthropicSystem(params.messages || []);
           const tools = params.tool_choice === 'none' ? [] : anthropicTools(params.tools);
           const body = {
             model: params.model || cfg.model,
             max_tokens: params.max_tokens || 4096,
             temperature: params.temperature ?? 0,
+            stream: !!params.stream,
             messages,
           };
           if (system) body.system = system;
@@ -464,22 +809,28 @@ function makeAnthropicCompatClient(cfg) {
             if (toolChoice) body.tool_choice = toolChoice;
           }
 
-          const base = (cfg.baseURL || 'https://local:8083').replace(/\/+$/, '');
-          const res = await fetch(`${base}/v1/messages`, {
+          // Default to the anthprox claude-api FastAPI, not the raw mitmdump.
+          const base = (cfg.baseURL || 'http://localhost:8083').replace(/\/+$/, '');
+          const res = await fetchWithBackoff(`${base}/v1/messages`, {
             method: 'POST',
             signal: options.signal,
             headers: {
               'content-type': 'application/json',
-              'x-api-key': cfg.apiKey,
+              'x-api-key': cfg.apiKey || '',
               'anthropic-version': '2023-06-01',
               ...buildHeaders(cfg.headers, cfg.registry),
             },
             body: JSON.stringify(body),
-          });
-          if (!res.ok) throw new Error(`Anthropic API ${res.status}: ${await res.text()}`);
-          const completion = toOpenAICompletion(body.model, await res.json());
-          if (params.stream) return fakeOpenAIStreamFromCompletion(completion);
-          return completion;
+          }, 'Anthropic');
+
+          // Streaming: read SSE in real-time via Anthropic SSE parser
+          if (params.stream) {
+            return anthropicStreamIterator(res.body, body.model, options.signal);
+          }
+
+          // Non-streaming: buffer and convert
+          const data = await res.json();
+          return toOpenAICompletion(body.model, data);
         },
       },
     },
@@ -536,4 +887,14 @@ function getDeepSeekOptions(taskType) {
   };
 }
 
-module.exports = { makeClient, modelFor, isConfigured, ensureModelRuntime, getDeepSeekOptions, isDeepSeekProvider, supportsVision };
+module.exports = {
+  makeClient,
+  makeClientForEndpoint,
+  modelFor,
+  isConfigured,
+  ensureModelRuntime,
+  getDeepSeekOptions,
+  isDeepSeekProvider,
+  supportsVision,
+  _test: { downgradeVisionMessages, hasVisionContent, isImageUrlSchemaError },
+};
