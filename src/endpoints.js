@@ -5,6 +5,7 @@
 // Preferred format (~/.config/shmakk/endpoints.json):
 // {
 //   "main": "gpt-5",
+//   "fast": "gemini-flash",
 //   "models": {
 //     "gpt-5": {
 //       "provider": "codex",
@@ -73,13 +74,14 @@ function normalizeModelConfig(name, cfg) {
     headers: cfg.headers || cfg.headears || null,
     registry: cfg.registry || null,
     main: !!cfg.main,
+    fast: !!cfg.fast,
     vision: !!cfg.vision,
   };
 }
 
 function normalizeRegistry(raw) {
   if (!raw || typeof raw !== 'object') {
-    return { main: null, models: {} };
+    return { main: null, fast: null, models: {} };
   }
 
   const explicitModels = raw.models || raw.endpoints;
@@ -98,15 +100,23 @@ function normalizeRegistry(raw) {
   }
 
   let main = typeof raw.main === 'string' ? raw.main : null;
+  let fast = typeof raw.fast === 'string' ? raw.fast : null;
   if (!main) {
     const marked = Object.values(models).find((cfg) => cfg.main);
     if (marked) main = marked.name;
   }
+  if (!fast) {
+    const marked = Object.values(models).find((cfg) => cfg.fast);
+    if (marked) fast = marked.name;
+  }
   if (!main && Object.keys(models).length === 1) {
     main = Object.keys(models)[0];
   }
+  if (!fast && Object.keys(models).length === 1) {
+    fast = Object.keys(models)[0];
+  }
 
-  return { main, models };
+  return { main, fast, models };
 }
 
 function loadModelRegistry(cwd) {
@@ -115,7 +125,7 @@ function loadModelRegistry(cwd) {
 
 function applyEndpoint(name, cwd) {
   const registry = loadModelRegistry(cwd);
-  const selected = name === 'main' ? registry.main : name;
+  const selected = name === 'main' ? registry.main : name === 'fast' ? registry.fast : name;
   if (!selected || !registry.models[selected]) return false;
 
   const normalized = registry.models[selected];
@@ -156,6 +166,7 @@ function getModelRegistry(cwd) {
   const registry = loadModelRegistry(cwd || endpointsCwd || process.cwd());
   return {
     main: registry.main,
+    fast: registry.fast,
     models: Object.fromEntries(Object.entries(registry.models).map(([name, cfg]) => [name, { ...cfg }])),
   };
 }
@@ -167,4 +178,5 @@ module.exports = {
   getCurrentEndpointName,
   supportsVision,
   getModelRegistry,
+  _test: { normalizeRegistry, normalizeModelConfig },
 };

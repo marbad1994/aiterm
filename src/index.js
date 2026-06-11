@@ -24,6 +24,17 @@ function findGitRoot(cwd = process.cwd()) {
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
 
+  if (opts.vimAi) {
+    const { runAi } = require('./vim');
+    process.exit(await runAi(opts.vimAi));
+  }
+
+  if (opts.vimEditor) {
+    const { runEditor } = require('./vim');
+    const realEditor = opts.vimReal || opts.vimEditor;
+    process.exit(runEditor(realEditor, opts.unknown));
+  }
+
   // Auto-detect git repo root as workspace if not explicitly set.
   // This keeps .shmakk state centralized at repo root instead of scattered.
   if (!opts.workspace) {
@@ -95,6 +106,7 @@ async function main() {
       shell: process.env.SHELL,
       term: process.env.TERM,
       endpoint: activeEndpointName || opts.endpoint || null,
+      fastEndpoint: require('./endpoints').getModelRegistry(opts.workspace || process.cwd()).fast || null,
       baseUrl: activeEndpoint?.base_url || process.env.SHMAKK_BASE_URL || null,
       apiKey: activeEndpoint?.api_key ? (activeEndpoint.api_key.slice(0, 8) + '...' + activeEndpoint.api_key.slice(-4)) : null,
       model: activeEndpoint?.model || process.env.SHMAKK_MODEL || null,
@@ -106,6 +118,7 @@ async function main() {
       stt: opts.stt,
       tts: opts.tts,
       sts: opts.sts,
+      vim: opts.vim,
     };
     process.stdout.write(JSON.stringify(cfg, null, 2) + '\n');
     process.exit(0);
