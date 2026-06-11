@@ -38,6 +38,7 @@ Or configure multiple native model providers in `~/.config/shmakk/endpoints.json
 ```json
 {
   "main": "gpt5-codex",
+  "fast": "flash",
   "models": {
     "gpt5-codex": {
       "provider": "codex",
@@ -53,6 +54,11 @@ Or configure multiple native model providers in `~/.config/shmakk/endpoints.json
       "provider": "anthropic",
       "model": "claude-sonnet-4-5-20250929",
       "api_key": "ANTHROPIC_API_KEY"
+    },
+    "flash": {
+      "provider": "google",
+      "model": "gemini-flash",
+      "api_key": "GOOGLE_API_KEY"
     }
   }
 }
@@ -74,6 +80,40 @@ You're now in an AI-supervised terminal. Type commands as normal. shmakk will:
 - **Correct mistakes** — typo in `gti status`? shmakk suggests `git status`. If the correction succeeds, shmakk follows up with the agent using your *original* intent, not just the fixed command.
 - **Execute tasks** — ask "set up a new React project" and shmakk handles the steps
 - **Keep you safe** — confirms risky commands before running them
+
+## Vim / vi mode
+
+By default, shmakk intercepts `vi` inside a shmakk session. Use `--vim vim` to intercept `vim`, or `--vim disable` to leave both commands untouched.
+
+```bash
+shmakk --vim vi
+shmakk --vim vim
+shmakk --vim disable
+```
+
+The shim launches your real Vim with your normal config, then loads shmakk commands:
+
+| Vim command | What it does |
+|-------------|--------------|
+| `:G <prompt>` | Generate code at the cursor |
+| `:Tw <prompt>` | Write prose or documentation |
+| `:Cmd <command>` | Run a shell command in a scratch buffer |
+| `<C-Space>` / `:ShmakkSuggest` | Full-block AI suggestion with preview + Accept/Deny |
+| `:ShmakkAccept` / `:ShmakkPreview` / `:ShmakkDeny` | Handle pending auto-suggestions |
+
+Lowercase `:g` remains Vim's native `:global`; use uppercase `:G` for shmakk. Regular Vim commands such as `:%s/foo/bar/g` continue to work.
+
+Optional automatic suggestions:
+
+```vim
+let g:shmakk_auto_suggest = 1
+let g:shmakk_auto_suggest_delay_ms = 2000
+let g:shmakk_auto_suggest_min_chars = 20
+```
+
+Suggestions prefer a fast model endpoint. Configure `"fast"` in `endpoints.json`, or set `SHMAKK_FAST_ENDPOINT` / `SHMAKK_VIM_SUGGEST_ENDPOINT`.
+
+→ Full Vim documentation: [docs/vim.md](docs/vim.md)
 
 ## Voice (optional)
 
@@ -138,9 +178,14 @@ The coordinator system enables complex, multi-step task execution with plan-firs
 | `SHMAKK_BASE_URL` | OpenAI-compatible base URL |
 | `SHMAKK_API_KEY` | API key |
 | `SHMAKK_MODEL` | Default model |
-| `SHMAKK_PROVIDER` | `openai-compatible`, `codex`, or `anthropic` |
+| `SHMAKK_FAST_ENDPOINT` | Named endpoint for low-latency tasks |
+| `SHMAKK_VIM_SUGGEST_ENDPOINT` | Named endpoint for Vim suggestions |
+| `SHMAKK_PROVIDER` | `openai-compatible`, `codex`, `anthropic`, or `google` |
 | `SHMAKK_HEADERS` | Extra headers (k=v,k=v) |
 | `SHMAKK_MODEL_RECOMMENDATION` | Set to `1` to let the configured `main` model route each call |
+| `SHMAKK_VIM_SUGGEST_MAX_CHARS` | Max context chars sent for Vim suggestions |
+| `SHMAKK_VIM_SUGGEST_BEFORE_LINES` | Context lines before cursor for Vim suggestions |
+| `SHMAKK_VIM_SUGGEST_AFTER_LINES` | Context lines after cursor for Vim suggestions |
 
 ## Useful commands
 
@@ -163,6 +208,33 @@ The coordinator system enables complex, multi-step task execution with plan-firs
 | `shmakk --sts` | Speech-to-speech mode |
 | `shmakk --stt` | Mic input, text responses |
 | `shmakk --tts` | Text input, spoken responses |
+| `shmakk --vim vi\|vim\|disable` | Select vi/vim interception mode |
+| `shmakk --mcp-status` | Show MCP server/tool status |
+
+## MCP tools
+
+shmakk can connect to Model Context Protocol servers over stdio. Configure servers in `.shmakk/mcp.json` for a workspace or `~/.config/shmakk/mcp.json` globally:
+
+```json
+{
+  "mcpServers": {
+    "example": {
+      "command": "node",
+      "args": ["server.js"],
+      "env": { "TOKEN": "${TOKEN}" },
+      "safety": "uncertain",
+      "safeTools": ["read_status"],
+      "unsafeTools": ["delete_item"],
+      "timeout": 30000,
+      "disabled": false
+    }
+  }
+}
+```
+
+Use `shmakk --mcp-status` or the in-session `mcp status` command to inspect discovered servers and tools. MCP tools participate in the same safety confirmation system as built-in tools.
+
+→ Full MCP documentation: [docs/mcp.md](docs/mcp.md)
 
 ## Safety
 
@@ -209,6 +281,8 @@ Host *
 ```
 
 Then `mkdir -p ~/.ssh/controlmasters` once.
+
+→ Full SSH documentation: [docs/ssh.md](docs/ssh.md)
 
 ## How it works
 

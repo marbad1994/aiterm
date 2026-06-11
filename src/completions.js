@@ -41,6 +41,7 @@ const FLAGS = [
   { flag: '--profile-set', arg: '<name>', desc: 'Switch profile and restart' },
   { flag: '--endpoint', arg: '<name>', desc: 'Use model preset from ~/.config/shmakk/endpoints.json' },
   { flag: '--colors', arg: '<true|false>', desc: 'Toggle ANSI colors' },
+  { flag: '--vim', arg: '<vi|vim|disable>', desc: 'Intercept vi/vim with shmakk Vim mode' },
   { flag: '--load-skill', arg: '<name>', desc: 'Load a skill into workspace state' },
   { flag: '--unload-skill', arg: '<name>', desc: 'Remove skill from registry' },
   { flag: '--install-skill', arg: '<url>', desc: 'Download and install skill from URL' },
@@ -78,6 +79,9 @@ function bash() {
       lines.push('      return');
     } else if (f.flag === '--colors') {
       lines.push('      COMPREPLY=($(compgen -W "true false" -- "$cur"))');
+      lines.push('      return');
+    } else if (f.flag === '--vim') {
+      lines.push('      COMPREPLY=($(compgen -W "vi vim disable" -- "$cur"))');
       lines.push('      return');
     } else {
       lines.push('      COMPREPLY=()');
@@ -122,6 +126,8 @@ function zsh() {
       lines.push(`    "${f.flag}[${f.desc}]:shell:(bash zsh fish)" \\`);
     } else if (f.flag === '--colors') {
       lines.push(`    "${f.flag}[${f.desc}]:value:(true false)" \\`);
+    } else if (f.flag === '--vim') {
+      lines.push(`    "${f.flag}[${f.desc}]:mode:(vi vim disable)" \\`);
     } else {
       lines.push(`    "${f.flag}[${f.desc}]: :" \\`);
     }
@@ -148,6 +154,8 @@ function fish() {
       lines.push(`complete -c shmakk -l ${f.flag.slice(2)} -d '${f.desc}' -xa 'bash zsh fish'`);
     } else if (f.flag === '--colors') {
       lines.push(`complete -c shmakk -l ${f.flag.slice(2)} -d '${f.desc}' -xa 'true false'`);
+    } else if (f.flag === '--vim') {
+      lines.push(`complete -c shmakk -l ${f.flag.slice(2)} -d '${f.desc}' -xa 'vi vim disable'`);
     } else {
       // arg but no specific completions
       lines.push(`complete -c shmakk -l ${f.flag.slice(2)} -d '${f.desc}' -r`);

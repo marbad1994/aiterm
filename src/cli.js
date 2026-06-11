@@ -30,6 +30,10 @@ function parseArgs(argv) {
     markdown: null,
     endpoint: null,
     modelRecommendation: false,
+    vim: 'vi',
+    vimEditor: null,
+    vimReal: null,
+    vimAi: null,
     voice: false,
     stt: false,
     tts: false,
@@ -47,10 +51,20 @@ function parseArgs(argv) {
     shell: null,
     unknown: [],
   };
+  const setVoiceCliMode = (mode) => {
+    opts.stt = mode === 'stt';
+    opts.tts = mode === 'tts';
+    opts.sts = mode === 'sts';
+    opts.voice = mode === 'stt' || mode === 'sts';
+  };
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     switch (a) {
+      case '--':
+        opts.unknown.push(...argv.slice(i + 1));
+        i = argv.length;
+        break;
       case '--review': opts.review = true; break;
       case '--yes-files': opts.yesFiles = true; break;
       case '--update-command-glossary': opts.updateGlossary = true; break;
@@ -93,10 +107,10 @@ function parseArgs(argv) {
         }
         if (!opts.buildHistory.length) opts.buildHistory = null; // flag with no files = auto-detect
         break;
-      case '--stt': opts.stt = true; opts.voice = true; break;
-      case '--tts': opts.tts = true; break;
-      case '--sts': opts.sts = true; opts.stt = true; opts.tts = true; opts.voice = true; break;
-      case '--voice': opts.stt = true; opts.voice = true; break;
+      case '--stt': setVoiceCliMode('stt'); break;
+      case '--tts': setVoiceCliMode('tts'); break;
+      case '--sts': setVoiceCliMode('sts'); break;
+      case '--voice': setVoiceCliMode('stt'); break;
       case '--voice-language': opts.voiceLanguage = argv[++i] || null; break;
       case '--voice-max-sec': opts.voiceMaxDuration = parseInt(argv[++i], 10) || null; break;
       case '--voice-silence-sec': opts.voiceSilenceSec = argv[++i] || null; break;
@@ -110,6 +124,19 @@ function parseArgs(argv) {
       case '--markdown': opts.markdown = argv[++i] || null; break;
       case '--endpoint': opts.endpoint = argv[++i] || null; break;
       case '--model-recommendation': opts.modelRecommendation = true; break;
+      case '--vim':
+        {
+          const v = (argv[++i] || 'vi').toLowerCase();
+          if (!['vi', 'vim', 'disable', 'enable'].includes(v)) {
+            process.stderr.write('[shmakk] invalid --vim. Use: vi|vim|disable\n');
+            process.exit(2);
+          }
+          opts.vim = v === 'enable' ? 'vim' : v;
+        }
+        break;
+      case '--vim-editor': opts.vimEditor = argv[++i] || null; break;
+      case '--vim-real': opts.vimReal = argv[++i] || null; break;
+      case '--vim-ai': opts.vimAi = argv[++i] || null; break;
       case '--shell':
         {
           const v = argv[++i];
@@ -144,6 +171,7 @@ Categories (shmakk --help <name> for details):
   session      Status, stats, restart, exit, control signals
   skills       Skill discovery, loading, listing, management
   models       Provider configuration, endpoint presets
+  vim          Vim/vi integration and AI suggestions
   voice        Speech-to-Text / Text-to-Speech options
   env          Environment variable reference
   mcp          MCP servers and browser automation
@@ -180,6 +208,7 @@ HELP_SECTIONS.launch = `══════════════════�
   --profile <name>                 Startup profile: tiny|balanced|deep|builder|large-app
   --colors <true|false>            Enable or disable ANSI colors
   --markdown <true|false>          Enable or disable markdown rendering
+  --vim <vi|vim|disable>           Intercept vi/vim inside shmakk (default: vi)
   --notify                         Desktop notifications for Y/n prompts
 `;
 
@@ -194,13 +223,57 @@ HELP_SECTIONS.models = `══════════════════�
   Configure in ~/.config/shmakk/endpoints.json:
     {
       "main": "claude",
+      "fast": "flash",
       "models": {
         "claude":       { "provider":"anthropic", "model":"claude-sonnet-4-5-...", "api_key":"..." },
+        "flash":        { "provider":"google",    "model":"gemini-flash",       "api_key":"..." },
         "gpt5":         { "provider":"codex",     "model":"gpt-5-codex",        "api_key":"..." },
         "local-qwen":   { "provider":"openai-compatible", "base_url":"http://127.0.0.1:1234/v1",
                           "model":"qwen/qwen3.5-9b" }
       }
     }
+
+  main is used for normal agent work. fast is used for low-latency paths such
+  as Vim suggestions. Override with SHMAKK_FAST_ENDPOINT or
+  SHMAKK_VIM_SUGGEST_ENDPOINT.
+`;
+
+HELP_SECTIONS.vim = `═══════════════════════════════════════════════════════════════════════════
+  VIM / VI
+═══════════════════════════════════════════════════════════════════════════
+
+  --vim <vi|vim|disable>           Intercept vi/vim inside shmakk (default: vi)
+
+  When enabled, shmakk puts a temporary vi or vim shim at the front of PATH
+  inside the shmakk shell. The shim launches your real editor, loads your
+  normal vimrc/plugins/colors first, then sources a small shmakk plugin.
+
+  Commands inside Vim:
+    :G <prompt>                    Generate code at the cursor
+    :Tw <prompt>                   Write prose or documentation at the cursor
+    :Cmd <command>                 Run a shell command in a scratch buffer
+    :ShmakkSuggest                 Ask for a full-block suggestion
+    :ShmakkAccept                  Preview and accept pending auto-suggestion
+    :ShmakkPreview                 Preview pending auto-suggestion
+    :ShmakkDeny                    Clear pending auto-suggestion
+
+  Mappings:
+    <C-Space>                      Manual full-block suggestion with preview
+    <leader>sa                     Accept pending auto-suggestion
+    <leader>sp                     Preview pending auto-suggestion
+    <leader>sd                     Deny pending auto-suggestion
+
+  Lowercase :g is not overridden; it remains Vim's native :global command.
+  Use :G for shmakk generation. Native commands such as :%s/foo/bar/g still
+  work normally.
+
+  Optional auto-suggest in vimrc:
+    let g:shmakk_auto_suggest = 1
+    let g:shmakk_auto_suggest_delay_ms = 2000
+    let g:shmakk_auto_suggest_min_chars = 20
+
+  Suggestions prefer SHMAKK_VIM_SUGGEST_ENDPOINT, then SHMAKK_FAST_ENDPOINT,
+  then the endpoint registry's fast model, then the current model.
 `;
 
 HELP_SECTIONS.session = `═══════════════════════════════════════════════════════════════════════════
@@ -240,6 +313,7 @@ HELP_SECTIONS.voice = `═══════════════════
   --sts                            Speech-to-Speech: always-on mic + TTS
   --stt                            Speech-to-Text: mic input, text output
   --tts                            Text-to-Speech: text input, spoken output
+                                  These modes are exclusive; the last one wins.
 
   --voice-language <code>          Language hint (e.g. en, es, fr)
   --voice-max-sec <sec>            Max recording seconds (default: 30)
@@ -261,10 +335,17 @@ HELP_SECTIONS.env = `═══════════════════�
   SHMAKK_BASE_URL                  OpenAI-compatible base URL
   SHMAKK_API_KEY                   API key
   SHMAKK_MODEL                     Default model
+  SHMAKK_FAST_ENDPOINT             Named endpoint for low-latency tasks
+  SHMAKK_VIM_SUGGEST_ENDPOINT      Named endpoint for Vim suggestions
   SHMAKK_PROVIDER                  Provider: openai-compatible|codex|anthropic|google
   SHMAKK_HEADERS                   Extra headers: k=v,k=v
   SHMAKK_REGISTRY                  Model registry filter (comma-separated)
   SHMAKK_MODEL_RECOMMENDATION      Set to 1 to let main model choose per call
+  SHMAKK_VIM_SHIM_DIR              Internal PATH shim for enhanced vi/vim
+  SHMAKK_REAL_PATH                 Original PATH before shmakk vim shims
+  SHMAKK_VIM_SUGGEST_MAX_CHARS     Max context chars sent for Vim suggestions
+  SHMAKK_VIM_SUGGEST_BEFORE_LINES  Lines before cursor for Vim suggestions
+  SHMAKK_VIM_SUGGEST_AFTER_LINES   Lines after cursor for Vim suggestions
 
   SHMAKK_HF_CACHE                  HuggingFace cache directory (voice models)
   SHMAKK_TTS_VOICE                 Pin a specific TTS voice
@@ -281,12 +362,27 @@ HELP_SECTIONS.mcp = `═══════════════════�
 ═══════════════════════════════════════════════════════════════════════════
 
   MCP servers: configure in ~/.config/shmakk/mcp.json or .shmakk/mcp.json
-    { "mcpServers": { "name": { "command": "...", "args": [...] } } }
+    {
+      "mcpServers": {
+        "name": {
+          "command": "...",
+          "args": ["..."],
+          "env": { "TOKEN": "\${TOKEN}" },
+          "safety": "uncertain",
+          "safeTools": ["read"],
+          "unsafeTools": ["delete"],
+          "timeout": 30000,
+          "disabled": false
+        }
+      }
+    }
 
   Browser automation: requires playwright
     npm install playwright && npx playwright install chromium
   Tools: navigate, click, type, read_page, screenshot, evaluate, select,
   wait, scroll, close.
+
+  shmakk --mcp-status              Show configured servers and discovered tools
 `;
 
 HELP_SECTIONS.ssh = `═══════════════════════════════════════════════════════════════════════════
@@ -372,6 +468,9 @@ HELP_SECTIONS.self = `═══════════════════�
   enable yes-files  |  disable yes-files
   enable colors  |  disable colors
   enable debug  |  disable debug
+  enable stt  |  disable stt        Ctrl+O voice input; disables TTS/STS
+  enable tts  |  disable tts        Spoken agent replies; disables STT/STS
+  enable sts  |  disable sts        Always-on speech-to-speech; disables STT/TTS
 
   -- Workflows --
   list workflows                    Show available automation workflows

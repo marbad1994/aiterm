@@ -23,6 +23,7 @@ const sessionSearch = require('./session-search');
 const { HELP, HELP_SUMMARY, HELP_SESSION_SUMMARY } = require('./cli');
 const audit = require('./audit');
 const { setMaxListeners } = require('events');
+const { prepareVimEnvironment } = require('./vim');
 
 // Lazy-loaded voice service — only required when --voice is active
 let voiceService = null;
@@ -163,7 +164,14 @@ function makeToolConfirm(opts, ask, out, getAbort) {
 }
 
 async function runOneSession(opts, registerSession) {
-  const session = startSession({ debug: opts.debug, voiceEnabled: !!opts.voice, shellOverride: opts.shell });
+  const vimShim = prepareVimEnvironment(opts.vim || 'vim');
+  const session = startSession({
+    debug: opts.debug,
+    voiceEnabled: !!opts.voice && !opts.sts,
+    shellOverride: opts.shell,
+    extraEnv: vimShim.env,
+    cleanup: vimShim.cleanup,
+  });
   let colorsEnabled = opts.colors !== false;
   let markdownEnabled = opts.markdown !== false;
   const out = (s) => session.stdoutWrite(colorsEnabled ? s : stripAnsi(s));
@@ -374,6 +382,7 @@ async function runOneSession(opts, registerSession) {
         HELP_SUMMARY,
         HELP_SESSION_SUMMARY,
         setColors: (v) => { colorsEnabled = v; },
+        setVoiceMode,
       });
       return;
     }
@@ -472,11 +481,15 @@ async function runOneSession(opts, registerSession) {
   // When --sts is active, runs a background loop: listen → transcribe → inject.
   // No hotkey needed — just speak and pause.
   // Pauses while TTS is speaking to avoid feedback loop.
-  if (opts.sts) {
+  let stsLoopStarted = false;
+  function startStsLoop() {
+    if (stsLoopStarted) return true;
     const vs = getVoiceService();
     if (!vs.isAvailable()) {
       out('\r\n\x1b[33m[shmakk] no audio recorder found. Install sox.\x1b[0m\r\n');
+      return false;
     } else {
+      stsLoopStarted = true;
       // Preload STT model in background so first transcription doesn't lag
       try { vs.preloadSTT(); } catch {}
       let voiceLoopActive = true;
@@ -525,68 +538,139 @@ async function runOneSession(opts, registerSession) {
       if (!session._stsFlags) session._stsFlags = {};
       session._stsFlags.setTtsSpeaking = (v) => { ttsSpeaking = v; if (!v) ttsStoppedAt = Date.now(); };
       // Let the global Ctrl+C handler stop the STS loop on double-press.
-      session._stsFlags.stopLoop = () => { voiceLoopActive = false; };
+      session._stsFlags.stopLoop = () => { voiceLoopActive = false; stsLoopStarted = false; };
+      return true;
+    }
+  }
+
+  if (opts.sts) startStsLoop();
+
+  function stopStsLoop() {
+    if (session._stsFlags?.stopLoop) session._stsFlags.stopLoop();
+  }
+
+  function stopRecorder() {
+    try { getVoiceService()._killRecorder(); } catch {}
+  }
+
+  function stopTts() {
+    try { getVoiceService()._killTts(); } catch {}
+    try { getTTSService().stopSpeaking(); } catch {}
+  }
+
+  function setVoiceMode(mode, enabled) {
+    const on = !!enabled;
+    if (mode === 'stt') {
+      if (on) {
+        stopStsLoop();
+        stopTts();
+        opts.stt = true;
+        opts.tts = false;
+        opts.sts = false;
+        opts.voice = true;
+        session.setVoiceEnabled(true);
+      } else {
+        opts.stt = false;
+        opts.voice = false;
+        session.setVoiceEnabled(false);
+        stopRecorder();
+      }
+      return;
+    }
+    if (mode === 'tts') {
+      if (on) {
+        stopStsLoop();
+        stopRecorder();
+        opts.stt = false;
+        opts.tts = true;
+        opts.sts = false;
+        opts.voice = false;
+        session.setVoiceEnabled(false);
+      } else {
+        opts.tts = false;
+        stopTts();
+      }
+      return;
+    }
+    if (mode === 'sts') {
+      if (on) {
+        stopRecorder();
+        stopTts();
+        opts.stt = false;
+        opts.tts = false;
+        opts.sts = true;
+        opts.voice = true;
+        session.setVoiceEnabled(false);
+        startStsLoop();
+      } else {
+        opts.sts = false;
+        opts.voice = false;
+        session.setVoiceEnabled(false);
+        stopStsLoop();
+        stopRecorder();
+        stopTts();
+      }
     }
   }
 
   // ── Voice input handler (Ctrl+O hotkey) ──
   // Only active when --voice/--stt is passed without --sts.
   let voiceInProgress = false;
-  if (opts.voice && !opts.sts) {
-    const voiceWarned = { mic: false };
-    session.ev.on('voice', async () => {
-      if (voiceInProgress) return;
-      voiceInProgress = true;
-      try {
-        const vs = getVoiceService();
-        if (!voiceWarned.mic) {
-          if (!vs.isAvailable()) {
-            out('\r\n\x1b[33m[shmakk voice] no microphone found. Install sox/arecord.\x1b[0m\r\n');
-            voiceInProgress = false;
+  const voiceWarned = { mic: false };
+  session.ev.on('voice', async () => {
+    if (!opts.voice || opts.sts || voiceInProgress) return;
+    voiceInProgress = true;
+    try {
+      const vs = getVoiceService();
+      if (!voiceWarned.mic) {
+        if (!vs.isAvailable()) {
+          out('\r\n\x1b[33m[shmakk voice] no microphone found. Install sox/arecord.\x1b[0m\r\n');
+          voiceInProgress = false;
+          return;
+        }
+        voiceWarned.mic = true;
+      }
+      // Show recording indicator — stays visible until transcription starts
+      out('\r\n\x1b[36m🎤 [shmakk] Listening... (speak now, stops on silence)\x1b[0m');
+      session.setVoiceEnabled(false);
+      // Use a handler on the stdin stack so Ctrl-C aborts recording
+      let recordingDone = false;
+      const release = session.captureStdin((data) => {
+        for (let i = 0; i < data.length; i++) {
+          if (data[i] === 0x03 || data[i] === 0x0f || findCtrlC(data) !== -1) {
+            recordingDone = true;
+            // Kill the recorder process immediately
+            try { vs._killRecorder(); } catch {}
+            release();
             return;
           }
-          voiceWarned.mic = true;
         }
-        // Show recording indicator — stays visible until transcription starts
-        out('\r\n\x1b[36m🎤 [shmakk] Listening... (speak now, stops on silence)\x1b[0m');
-        // Use a handler on the stdin stack so Ctrl-C aborts recording
-        let recordingDone = false;
-        const release = session.captureStdin((data) => {
-          for (let i = 0; i < data.length; i++) {
-            if (data[i] === 0x03 || data[i] === 0x0f || findCtrlC(data) !== -1) {
-              recordingDone = true;
-              // Kill the recorder process immediately
-              try { vs._killRecorder(); } catch {}
-              release();
-              return;
-            }
-          }
-          session.childWrite(data);
-        });
-        const text = await vs.recordAndTranscribe({
-          maxDurationSec: parseInt(opts.voiceMaxDuration || process.env.SHMAKK_VOICE_MAX_SEC || '10', 10),
-          language: opts.voiceLanguage || process.env.SHMAKK_VOICE_LANGUAGE,
-          onStart: () => {},
-          onStop: () => {
-            recordingDone = true;
-            try { release(); } catch {}
-          },
-        });
-        if (text) {
-          // Route to the agent, not the shell, so the correction engine
-          // doesn't try to turn transcripts into commands.
-          await runVoiceAsTask(text);
-        } else {
-          out('\r\x1b[33m[shmakk] no speech detected\x1b[0m\r\n');
-        }
-      } catch (err) {
-        out(`\r\x1b[31m[shmakk voice] ${err.message}\x1b[0m\r\n`);
-        if (opts.debug) out(`\r\x1b[33m${err.stack}\x1b[0m\r\n`);
-      } finally {
-        voiceInProgress = false;
+        session.childWrite(data);
+      });
+      const text = await vs.recordAndTranscribe({
+        maxDurationSec: parseInt(opts.voiceMaxDuration || process.env.SHMAKK_VOICE_MAX_SEC || '10', 10),
+        language: opts.voiceLanguage || process.env.SHMAKK_VOICE_LANGUAGE,
+        onStart: () => {},
+        onStop: () => {
+          recordingDone = true;
+          try { release(); } catch {}
+        },
+      });
+      if (text) {
+        // Route to the agent, not the shell, so the correction engine
+        // doesn't try to turn transcripts into commands.
+        await runVoiceAsTask(text);
+      } else {
+        out('\r\x1b[33m[shmakk] no speech detected\x1b[0m\r\n');
       }
-    });
-  }
+    } catch (err) {
+      out(`\r\x1b[31m[shmakk voice] ${err.message}\x1b[0m\r\n`);
+      if (opts.debug) out(`\r\x1b[33m${err.stack}\x1b[0m\r\n`);
+    } finally {
+      voiceInProgress = false;
+      session.setVoiceEnabled(!!opts.stt && !opts.sts);
+    }
+  });
 
   session.ev.on('command', (c) => {
     lastCommand = c;
@@ -683,6 +767,7 @@ async function runOneSession(opts, registerSession) {
           HELP_SUMMARY,
           HELP_SESSION_SUMMARY,
           setColors: (v) => { colorsEnabled = v; },
+          setVoiceMode,
         });
         session.childWrite('\r');
         return;

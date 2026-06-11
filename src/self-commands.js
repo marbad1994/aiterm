@@ -370,6 +370,64 @@ const SELF_COMMANDS = [
     action: 'disable-debug',
   },
 
+  // ── Voice modes ──
+  {
+    patterns: [
+      /^(?:enable|turn\s+on|start)\s+stt$/i,
+      /^stt\s+on$/i,
+      /^(?:enable|turn\s+on|start)\s+speech[-\s]?to[-\s]?text$/i,
+      /^(?:enable|turn\s+on|start)\s+voice(?:\s+input)?$/i,
+      /^voice(?:\s+input)?\s+on$/i,
+    ],
+    action: 'enable-stt',
+  },
+  {
+    patterns: [
+      /^(?:disable|turn\s+off|stop)\s+stt$/i,
+      /^stt\s+off$/i,
+      /^(?:disable|turn\s+off|stop)\s+speech[-\s]?to[-\s]?text$/i,
+      /^(?:disable|turn\s+off|stop)\s+voice(?:\s+input)?$/i,
+      /^voice(?:\s+input)?\s+off$/i,
+    ],
+    action: 'disable-stt',
+  },
+  {
+    patterns: [
+      /^(?:enable|turn\s+on|start)\s+tts$/i,
+      /^tts\s+on$/i,
+      /^(?:enable|turn\s+on|start)\s+text[-\s]?to[-\s]?speech$/i,
+      /^(?:enable|turn\s+on|start)\s+spoken\s+responses?$/i,
+    ],
+    action: 'enable-tts',
+  },
+  {
+    patterns: [
+      /^(?:disable|turn\s+off|stop)\s+tts$/i,
+      /^tts\s+off$/i,
+      /^(?:disable|turn\s+off|stop)\s+text[-\s]?to[-\s]?speech$/i,
+      /^(?:disable|turn\s+off|stop)\s+spoken\s+responses?$/i,
+    ],
+    action: 'disable-tts',
+  },
+  {
+    patterns: [
+      /^(?:enable|turn\s+on|start)\s+sts$/i,
+      /^sts\s+on$/i,
+      /^(?:enable|turn\s+on|start)\s+speech[-\s]?to[-\s]?speech$/i,
+      /^(?:enable|turn\s+on|start)\s+always[-\s]?on\s+voice$/i,
+    ],
+    action: 'enable-sts',
+  },
+  {
+    patterns: [
+      /^(?:disable|turn\s+off|stop)\s+sts$/i,
+      /^sts\s+off$/i,
+      /^(?:disable|turn\s+off|stop)\s+speech[-\s]?to[-\s]?speech$/i,
+      /^(?:disable|turn\s+off|stop)\s+always[-\s]?on\s+voice$/i,
+    ],
+    action: 'disable-sts',
+  },
+
   // ── Profile ──
   {
     patterns: [
@@ -904,6 +962,63 @@ function executeSelfCommand(match, write, ctx = {}) {
     case 'disable-debug': {
       if (ctx.opts) ctx.opts.debug = false;
       write('[shmakk] debug mode off\r\n');
+      break;
+    }
+
+    // ── Voice modes ──
+    case 'enable-stt': {
+      if (ctx.setVoiceMode) ctx.setVoiceMode('stt', true);
+      else {
+        if (ctx.opts) {
+          ctx.opts.stt = true;
+          ctx.opts.tts = false;
+          ctx.opts.sts = false;
+          ctx.opts.voice = true;
+        }
+      }
+      write('[shmakk] STT enabled — press Ctrl+O for voice input\r\n');
+      break;
+    }
+    case 'disable-stt': {
+      if (ctx.setVoiceMode) ctx.setVoiceMode('stt', false);
+      else {
+        if (ctx.opts) { ctx.opts.stt = false; ctx.opts.voice = !!ctx.opts.sts; }
+      }
+      write('[shmakk] STT disabled\r\n');
+      break;
+    }
+    case 'enable-tts': {
+      if (ctx.setVoiceMode) ctx.setVoiceMode('tts', true);
+      else if (ctx.opts) {
+        ctx.opts.stt = false;
+        ctx.opts.tts = true;
+        ctx.opts.sts = false;
+        ctx.opts.voice = false;
+      }
+      write('[shmakk] TTS enabled — agent replies will be spoken\r\n');
+      break;
+    }
+    case 'disable-tts': {
+      if (ctx.setVoiceMode) ctx.setVoiceMode('tts', false);
+      else if (ctx.opts) ctx.opts.tts = false;
+      write('[shmakk] TTS disabled\r\n');
+      break;
+    }
+    case 'enable-sts': {
+      if (ctx.setVoiceMode) ctx.setVoiceMode('sts', true);
+      else if (ctx.opts) {
+        ctx.opts.stt = false;
+        ctx.opts.tts = false;
+        ctx.opts.sts = true;
+        ctx.opts.voice = true;
+      }
+      write('[shmakk] STS enabled — always-on speech-to-speech started\r\n');
+      break;
+    }
+    case 'disable-sts': {
+      if (ctx.setVoiceMode) ctx.setVoiceMode('sts', false);
+      else if (ctx.opts) { ctx.opts.sts = false; ctx.opts.stt = false; ctx.opts.tts = false; ctx.opts.voice = false; }
+      write('[shmakk] STS disabled\r\n');
       break;
     }
 
