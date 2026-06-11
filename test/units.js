@@ -93,6 +93,166 @@ const test = (name, fn) => tests.push({ name, fn });
   });
 }
 
+// ── CLI parsing / completions ──────────────────────────────────────────────
+{
+  const { parseArgs } = require('../src/cli');
+  const { FLAGS } = require('../src/completions');
+  const { _test: endpointsTest } = require('../src/endpoints');
+
+  test('cli: vim mode defaults to vi and accepts vi/vim/disable', () => {
+    assert.strictEqual(parseArgs([]).vim, 'vi');
+    assert.strictEqual(parseArgs(['--vim', 'vi']).vim, 'vi');
+    assert.strictEqual(parseArgs(['--vim', 'vim']).vim, 'vim');
+    assert.strictEqual(parseArgs(['--vim', 'disable']).vim, 'disable');
+  });
+
+  test('cli: -- passes remaining args through for hidden vim wrapper', () => {
+    const opts = parseArgs(['--vim-editor', 'vim', '--vim-real', '/usr/bin/vim', '--', '--help', 'file.txt']);
+    assert.strictEqual(opts.help, false);
+    assert.deepStrictEqual(opts.unknown, ['--help', 'file.txt']);
+  });
+
+  test('completions: includes --vim argument choices', () => {
+    const flag = FLAGS.find((f) => f.flag === '--vim');
+    assert.ok(flag);
+    assert.strictEqual(flag.arg, '<vi|vim|disable>');
+  });
+
+  test('endpoints: registry supports main and fast model roles', () => {
+    const registry = endpointsTest.normalizeRegistry({
+      main: 'pro',
+      fast: 'flash',
+      models: {
+        pro: { provider: 'google', model: 'gemini-pro' },
+        flash: { provider: 'google', model: 'gemini-flash' },
+      },
+    });
+    assert.strictEqual(registry.main, 'pro');
+    assert.strictEqual(registry.fast, 'flash');
+  });
+
+  test('endpoints: fast can be marked on a model entry', () => {
+    const registry = endpointsTest.normalizeRegistry({
+      models: {
+        pro: { provider: 'google', model: 'gemini-pro', main: true },
+        flash: { provider: 'google', model: 'gemini-flash', fast: true },
+      },
+    });
+    assert.strictEqual(registry.main, 'pro');
+    assert.strictEqual(registry.fast, 'flash');
+  });
+}
+
+// ── shmakk vim mode ────────────────────────────────────────────────────────
+{
+  const { commandUsesShmakk, _test: vimTest } = require('../src/vim');
+
+  test('vim: :cmd blocks shmakk recursion', () => {
+    assert.strictEqual(commandUsesShmakk('shmakk status'), true);
+    assert.strictEqual(commandUsesShmakk('npm test && shmakk status'), true);
+    assert.strictEqual(commandUsesShmakk('git status'), false);
+  });
+
+  test('vim: strips markdown fences from generated code', () => {
+    assert.strictEqual(vimTest.stripFence('```js\nconst x = 1;\n```'), 'const x = 1;');
+    assert.strictEqual(vimTest.stripFence('plain text'), 'plain text');
+  });
+
+  test('vim: generated commands preserve raw quoted args', () => {
+    const plugin = vimTest.writePlugin();
+    try {
+      const txt = fs.readFileSync(plugin, 'utf8');
+      assert.ok(txt.includes('command! -nargs=* ShmakkCommand call ShmakkCommand(<q-args>)'));
+      assert.ok(txt.includes('command! -nargs=* ShmakkGenerate call ShmakkGenerate(<q-args>)'));
+      assert.ok(!txt.includes('<f-args>'));
+      assert.ok(txt.includes('command! -nargs=* G call ShmakkGenerate(<q-args>)'));
+      assert.ok(txt.includes('command! -nargs=* Cmd call ShmakkCommand(<q-args>)'));
+      assert.ok(txt.includes('command! -nargs=0 ShmakkSuggest call ShmakkSuggest()'));
+      assert.ok(txt.includes('autocmd TextChangedI <buffer> call s:ScheduleAutoSuggest()'));
+      assert.ok(txt.includes('if !get(g:, "shmakk_auto_suggest", 0) | return | endif'));
+      assert.ok(txt.includes('job_start([s:shmakk_node, s:shmakk_bin, "--vim-ai", "suggest"]'));
+      assert.ok(!txt.includes('cnoremap'));
+      assert.ok(!txt.includes('cnoreabbrev'));
+    } finally {
+      fs.rmSync(plugin, { force: true });
+    }
+  });
+
+  test('vim: generated plugin escapes newline strings for Vimscript', () => {
+    const plugin = vimTest.writePlugin();
+    try {
+      const txt = fs.readFileSync(plugin, 'utf8');
+      assert.ok(txt.includes('join(getline(1, "$"), "\\n")'));
+      assert.ok(txt.includes('split(a:text, "\\n", v:true)'));
+      assert.ok(txt.includes('split(r.stdout, "\\n", v:true)'));
+      assert.ok(!txt.includes('join(getline(1, "$"), "\n")'));
+    } finally {
+      fs.rmSync(plugin, { force: true });
+    }
+  });
+
+  test('vim: C-Space uses full-block suggestion instead of completefunc', () => {
+    const plugin = vimTest.writePlugin();
+    try {
+      const txt = fs.readFileSync(plugin, 'utf8');
+      assert.ok(txt.includes('function! ShmakkSuggest() abort'));
+      assert.ok(txt.includes('echo "[shmakk] suggesting..." | redraw'));
+      assert.ok(txt.includes('Accept shmakk suggestion?'));
+      assert.ok(txt.includes('inoremap <silent> <C-Space> <Esc>:call ShmakkSuggest()<CR>a'));
+      assert.ok(txt.includes('command! -nargs=0 ShmakkAccept call ShmakkAccept()'));
+      assert.ok(txt.includes('command! -nargs=0 ShmakkDeny call ShmakkDeny()'));
+      assert.ok(txt.includes('command! -nargs=0 ShmakkPreview call ShmakkPreview()'));
+      assert.ok(!txt.includes('completefunc=ShmakkComplete'));
+      assert.ok(!txt.includes('function! ShmakkComplete'));
+    } finally {
+      fs.rmSync(plugin, { force: true });
+    }
+  });
+
+  test('vim: pending suggestion accept previews before insertion', () => {
+    const plugin = vimTest.writePlugin();
+    try {
+      const txt = fs.readFileSync(plugin, 'utf8');
+      const acceptStart = txt.indexOf('function! ShmakkAccept() abort');
+      const acceptEnd = txt.indexOf('function! ShmakkDeny() abort');
+      const acceptBlock = txt.slice(acceptStart, acceptEnd);
+      assert.ok(acceptBlock.includes('file [shmakk-suggestion]'));
+      assert.ok(acceptBlock.includes('Accept shmakk suggestion?'));
+      assert.ok(acceptBlock.includes('call s:InsertAtCursor(text)'));
+    } finally {
+      fs.rmSync(plugin, { force: true });
+    }
+  });
+
+  test('vim: suggestion context is trimmed around cursor', () => {
+    const lines = Array.from({ length: 300 }, (_, i) => `line ${i + 1}`);
+    const out = vimTest.contextWindow({ buffer: lines.join('\n'), line: 200 }, 'suggest');
+    assert.ok(out.includes('line 200'));
+    assert.ok(!out.includes('line 1\n'));
+    assert.ok(out.includes('Earlier lines omitted'));
+    assert.ok(out.includes('Later lines omitted'));
+  });
+
+  test('vim: suggestions prefer dedicated fast endpoint env', () => {
+    const prevSuggest = process.env.SHMAKK_VIM_SUGGEST_ENDPOINT;
+    const prevFast = process.env.SHMAKK_FAST_ENDPOINT;
+    try {
+      delete process.env.SHMAKK_VIM_SUGGEST_ENDPOINT;
+      delete process.env.SHMAKK_FAST_ENDPOINT;
+      assert.strictEqual(vimTest.suggestEndpointName(), 'fast');
+      process.env.SHMAKK_FAST_ENDPOINT = 'flash';
+      assert.strictEqual(vimTest.suggestEndpointName(), 'flash');
+      process.env.SHMAKK_VIM_SUGGEST_ENDPOINT = 'tiny';
+      assert.strictEqual(vimTest.suggestEndpointName(), 'tiny');
+    } finally {
+      if (prevSuggest === undefined) delete process.env.SHMAKK_VIM_SUGGEST_ENDPOINT;
+      else process.env.SHMAKK_VIM_SUGGEST_ENDPOINT = prevSuggest;
+      if (prevFast === undefined) delete process.env.SHMAKK_FAST_ENDPOINT;
+      else process.env.SHMAKK_FAST_ENDPOINT = prevFast;
+    }
+  });
+}
+
 // ── correction NL pre-filter ───────────────────────────────────────────────
 {
   const { looksLikeNaturalLanguage } = require('../src/correction');
@@ -168,6 +328,31 @@ const test = (name, fn) => tests.push({ name, fn });
     for (const p of ['.gitignore', '.editorconfig', 'README.md', 'src/index.js']) {
       assert.strictEqual(isSecretPath(p), false, `expected non-secret: ${p}`);
     }
+  });
+}
+
+// ── LLM message normalization ───────────────────────────────────────────────
+{
+  const { _test: llmTest } = require('../src/llm');
+
+  test('llm: downgrades image_url content blocks to text placeholders', () => {
+    const messages = [{
+      role: 'user',
+      content: [
+        { type: 'text', text: 'look at this' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,abcd', detail: 'auto' } },
+      ],
+    }];
+    assert.strictEqual(llmTest.hasVisionContent(messages), true);
+    const downgraded = llmTest.downgradeVisionMessages(messages);
+    assert.strictEqual(downgraded[0].content, 'look at this\n[Image omitted: image/png, base64=4 chars, detail=auto]');
+    assert.strictEqual(llmTest.hasVisionContent(downgraded), false);
+  });
+
+  test('llm: detects image_url schema rejection errors', () => {
+    const err = new Error('400 Failed to deserialize the JSON body into the target type: messages[35]: unknown variant `image_url`, expected `text`');
+    err.status = 400;
+    assert.strictEqual(llmTest.isImageUrlSchemaError(err), true);
   });
 }
 
@@ -450,6 +635,17 @@ const test = (name, fn) => tests.push({ name, fn });
     assert.strictEqual(matchSelfCommand('enable correction').action, 'enable-correction');
   });
 
+  test('self-commands: matches voice mode toggles', () => {
+    assert.strictEqual(matchSelfCommand('enable stt').action, 'enable-stt');
+    assert.strictEqual(matchSelfCommand('disable stt').action, 'disable-stt');
+    assert.strictEqual(matchSelfCommand('enable tts').action, 'enable-tts');
+    assert.strictEqual(matchSelfCommand('disable tts').action, 'disable-tts');
+    assert.strictEqual(matchSelfCommand('enable sts').action, 'enable-sts');
+    assert.strictEqual(matchSelfCommand('disable sts').action, 'disable-sts');
+    assert.strictEqual(matchSelfCommand('turn on speech to text').action, 'enable-stt');
+    assert.strictEqual(matchSelfCommand('turn off speech to speech').action, 'disable-sts');
+  });
+
   test('self-commands: matches set profile with confirm flag', () => {
     const r = matchSelfCommand('set profile to deep');
     assert.strictEqual(r.action, 'set-profile');
@@ -467,6 +663,53 @@ const test = (name, fn) => tests.push({ name, fn });
     assert.strictEqual(opts.review, false);
     executeSelfCommand({ action: 'enable-debug' }, (s) => out.push(s), { opts });
     assert.strictEqual(opts.debug, true);
+  });
+
+  test('self-commands: executeSelfCommand mutates voice opts via ctx', () => {
+    const { executeSelfCommand } = require('../src/self-commands');
+    const opts = { stt: false, tts: false, sts: false, voice: false };
+    const out = [];
+    executeSelfCommand({ action: 'enable-stt' }, (s) => out.push(s), { opts });
+    assert.strictEqual(opts.stt, true);
+    assert.strictEqual(opts.tts, false);
+    assert.strictEqual(opts.sts, false);
+    assert.strictEqual(opts.voice, true);
+    executeSelfCommand({ action: 'enable-tts' }, (s) => out.push(s), { opts });
+    assert.strictEqual(opts.stt, false);
+    assert.strictEqual(opts.tts, true);
+    assert.strictEqual(opts.sts, false);
+    assert.strictEqual(opts.voice, false);
+    executeSelfCommand({ action: 'enable-sts' }, (s) => out.push(s), { opts });
+    assert.strictEqual(opts.sts, true);
+    assert.strictEqual(opts.stt, false);
+    assert.strictEqual(opts.tts, false);
+    assert.strictEqual(opts.voice, true);
+    executeSelfCommand({ action: 'disable-sts' }, (s) => out.push(s), { opts });
+    assert.strictEqual(opts.sts, false);
+    assert.strictEqual(opts.stt, false);
+    assert.strictEqual(opts.tts, false);
+    assert.strictEqual(opts.voice, false);
+  });
+
+  test('cli: voice flags are last-one-wins', () => {
+    const { parseArgs } = require('../src/cli');
+    let opts = parseArgs(['--stt', '--tts']);
+    assert.strictEqual(opts.stt, false);
+    assert.strictEqual(opts.tts, true);
+    assert.strictEqual(opts.sts, false);
+    assert.strictEqual(opts.voice, false);
+
+    opts = parseArgs(['--tts', '--sts']);
+    assert.strictEqual(opts.stt, false);
+    assert.strictEqual(opts.tts, false);
+    assert.strictEqual(opts.sts, true);
+    assert.strictEqual(opts.voice, true);
+
+    opts = parseArgs(['--sts', '--voice']);
+    assert.strictEqual(opts.stt, true);
+    assert.strictEqual(opts.tts, false);
+    assert.strictEqual(opts.sts, false);
+    assert.strictEqual(opts.voice, true);
   });
 
   test('self-commands: executeSelfCommand sets env var for model', () => {
