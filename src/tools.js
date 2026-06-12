@@ -7,6 +7,8 @@ const { execFile } = require('child_process');
 const { classifyRunCommand, isSecretPath } = require('./safety');
 const { webSearch, fetchUrl } = require('./web');
 const { dispatchBrowser, classifyBrowserCommand } = require('./browser');
+const { dispatchMobile, classifyMobileCommand } = require('./mobile');
+const { dispatchElectron, classifyElectronCommand } = require('./electron');
 const { recordEdit } = require('./edit-tracker');
 const { appendMemory } = require('./memory');
 const { isMutationTool, hashArgs } = require('./guard');
@@ -179,6 +181,50 @@ const TOOLS = [
     },
   }},
   { type: 'function', function: {
+    name: 'mobile',
+    description: 'Control an Android device/emulator via ADB. Commands: screenshot (capture screen as PNG), click (tap at x,y coordinates), type (input text), swipe (drag from x1,y1 to x2,y2), key (press BACK/HOME/etc), read_page (parse UI hierarchy via uiautomator), list_apps (list installed packages), launch (start app by package name), close (force-stop app), wait (pause in ms). Requires adb on PATH and a connected device.',
+    parameters: {
+      type: 'object',
+      required: ['command'],
+      properties: {
+        command: { type: 'string', enum: ['screenshot', 'click', 'type', 'swipe', 'key', 'read_page', 'list_apps', 'launch', 'close', 'wait'] },
+        x: { type: 'number', description: 'X coordinate for click' },
+        y: { type: 'number', description: 'Y coordinate for click' },
+        x1: { type: 'number', description: 'Start X for swipe' },
+        y1: { type: 'number', description: 'Start Y for swipe' },
+        x2: { type: 'number', description: 'End X for swipe' },
+        y2: { type: 'number', description: 'End Y for swipe' },
+        duration: { type: 'number', description: 'Swipe duration in ms' },
+        text: { type: 'string', description: 'Text to type' },
+        code: { type: 'string', description: 'Key code: BACK, HOME, ENTER, DELETE, MENU, APP_SWITCH, VOLUME_UP, VOLUME_DOWN' },
+        package: { type: 'string', description: 'Android package name (e.g. com.example.app)' },
+        filter: { type: 'string', description: 'Package name filter for list_apps' },
+        ms: { type: 'number', description: 'Milliseconds to wait' },
+      },
+    },
+  }},
+  { type: 'function', function: {
+    name: 'electron',
+    description: 'Control an Electron desktop app via Chrome DevTools Protocol (CDP). Commands: screenshot (capture window as PNG), navigate (go to URL), click (CSS selector), type (fill input), read_page (extract page content, links, forms), evaluate (run JS), select (dropdown), wait (for selector or seconds), scroll (up/down), close (disconnect), connect (attach to a debug port). The Electron app must be running with --remote-debugging-port (default 9222). Requires playwright installed.',
+    parameters: {
+      type: 'object',
+      required: ['command'],
+      properties: {
+        command: { type: 'string', enum: ['screenshot', 'navigate', 'click', 'type', 'read_page', 'evaluate', 'select', 'wait', 'scroll', 'close', 'connect'] },
+        url: { type: 'string', description: 'URL for navigate' },
+        selector: { type: 'string', description: 'CSS selector for click/type/select/wait' },
+        text: { type: 'string', description: 'Text to type or option to select' },
+        code: { type: 'string', description: 'JavaScript for evaluate' },
+        seconds: { type: 'number', description: 'Seconds to wait' },
+        direction: { type: 'string', enum: ['up', 'down'], description: 'Scroll direction' },
+        amount: { type: 'number', description: 'Scroll amount in pixels' },
+        debugPort: { type: 'number', description: 'CDP debug port. Default 9222.' },
+        value: { type: 'string', description: 'Option value for select' },
+        fullPage: { type: 'boolean', description: 'Screenshot full page. Default true.' },
+      },
+    },
+  }},
+  { type: 'function', function: {
     name: 'image_gen',
     description: 'Generate an image from a text prompt using OpenAI DALL-E. The image is saved to disk and the file path is returned. Requires SHMAKK_OPENAI_API_KEY env var.',
     parameters: {
@@ -299,6 +345,8 @@ function classifyTool(name, args, mcpManager) {
   if (name === 'run') return classifyRunCommand(args.cmd || '');
   if (name === 'web_search' || name === 'fetch_url') return 'safe';
   if (name === 'browser') return classifyBrowserCommand(args);
+  if (name === 'mobile') return classifyMobileCommand(args);
+  if (name === 'electron') return classifyElectronCommand(args);
   if (name === 'remember') return 'safe';
   if (name === 'image_gen') return 'unsafe';       // external API call, costs money
   if (name === 'tts_generate') return 'safe';       // local-only, no network
@@ -329,6 +377,27 @@ function describeTool(name, args, mcpManager) {
     if (cmd === 'screenshot') return 'browser screenshot';
     if (cmd === 'evaluate') return `browser eval JS`;
     return `browser ${cmd}`;
+  }
+  if (name === 'mobile') {
+    const cmd = args.command || '';
+    if (cmd === 'screenshot') return 'mobile screenshot';
+    if (cmd === 'click') return `mobile click (${args.x}, ${args.y})`;
+    if (cmd === 'type') return `mobile type "${(args.text || '').slice(0, 40)}"`;
+    if (cmd === 'swipe') return `mobile swipe (${args.x1},${args.y1}) to (${args.x2},${args.y2})`;
+    if (cmd === 'read_page') return 'mobile read page';
+    if (cmd === 'launch') return `mobile launch ${args.package || ''}`;
+    if (cmd === 'close') return `mobile close ${args.package || ''}`;
+    return `mobile ${cmd}`;
+  }
+  if (name === 'electron') {
+    const cmd = args.command || '';
+    if (cmd === 'screenshot') return 'electron screenshot';
+    if (cmd === 'navigate') return `electron navigate ${args.url || ''}`;
+    if (cmd === 'click') return `electron click ${args.selector || ''}`;
+    if (cmd === 'type') return `electron type into ${args.selector || ''}`;
+    if (cmd === 'read_page') return 'electron read page content';
+    if (cmd === 'connect') return `electron connect port ${args.debugPort || 9222}`;
+    return `electron ${cmd}`;
   }
   if (name === 'image_gen') return `image_gen: "${(args.prompt || '').slice(0, 80)}" (${args.size || '1024x1024'})`;
   if (name === 'tts_generate') return `tts_generate: "${(args.text || '').slice(0, 80)}" (voice: ${args.voice || 'af_heart'})`;
@@ -527,6 +596,12 @@ async function dispatchTool(name, args, roots, confirmTool, signal, mcpManager) 
   }
   if (name === 'browser') {
     return await dispatchBrowser(args);
+  }
+  if (name === 'mobile') {
+    return await dispatchMobile(args);
+  }
+  if (name === 'electron') {
+    return await dispatchElectron(args);
   }
   if (name === 'remember') {
     const r = appendMemory({

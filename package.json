@@ -49,8 +49,9 @@
   },
   "dependencies": {
     "@lydell/node-pty": "^1.2.0-beta.12",
-    "openai": "^4.77.0",
-    "wavefile": "^11.0.0"
+    "openai": "^4.104.0",
+    "wavefile": "^11.0.0",
+    "ws": "^8.21.0"
   },
   "optionalDependencies": {
     "@huggingface/transformers": "^4.2.0",
