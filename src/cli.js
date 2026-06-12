@@ -21,6 +21,7 @@ function parseArgs(argv) {
     globalSkills: false,
     resumeStatus: false,
     showPlan: false,
+    newSession: false,
     mcpStatus: false,
     exitNow: false,
     restart: false,
@@ -49,6 +50,11 @@ function parseArgs(argv) {
     completion: null,
     helpCategory: null,
     shell: null,
+    // connect-browser subcommand
+    connectBrowser: false,
+    connectBrowserPort: null,
+    connectBrowserDisconnect: false,
+    connectBrowserStatus: false,
     unknown: [],
   };
   const setVoiceCliMode = (mode) => {
@@ -93,6 +99,7 @@ function parseArgs(argv) {
       case '--install-skill': opts.installSkill = argv[++i] || null; break;
       case '--resume-status': opts.resumeStatus = true; break;
       case '--show-plan': opts.showPlan = true; break;
+      case '--new-session': opts.newSession = true; break;
       case '--mcp-status': opts.mcpStatus = true; break;
       case '--exit': opts.exitNow = true; break;
       case '--restart': opts.restart = true; break;
@@ -145,6 +152,33 @@ function parseArgs(argv) {
             process.exit(2);
           }
           opts.shell = v;
+        }
+        break;
+      case 'connect-browser':
+        opts.connectBrowser = true;
+        // Consume subsequent flags that belong to connect-browser
+        while (i + 1 < argv.length) {
+          const n = argv[i + 1];
+          if (n === '--port' || n === '-p') {
+            i++;
+            opts.connectBrowserPort = parseInt(argv[++i], 10);
+            if (isNaN(opts.connectBrowserPort)) {
+              process.stderr.write(`[shmakk] connect-browser: invalid port: ${argv[i]}\n`);
+              process.exit(2);
+            }
+          } else if (n === '--disconnect' || n === '-d') {
+            i++;
+            opts.connectBrowserDisconnect = true;
+          } else if (n === '--status' || n === '-s') {
+            i++;
+            opts.connectBrowserStatus = true;
+          } else if (n === '--help' || n === '-h') {
+            i++;
+            opts.help = true;
+            opts.helpCategory = 'mcp';
+          } else {
+            break; // unknown or next subcommand
+          }
         }
         break;
       default: opts.unknown.push(a);
@@ -206,6 +240,7 @@ HELP_SECTIONS.launch = `══════════════════�
   --print-config                   Print resolved configuration and exit
 
   --workspace <path>               Override workspace root
+  --new-session                    Force a new session instead of resuming
   --profile <name>                 Startup profile: tiny|balanced|deep|builder|large-app
   --colors <true|false>            Enable or disable ANSI colors
   --markdown <true|false>          Enable or disable markdown rendering
@@ -382,6 +417,13 @@ HELP_SECTIONS.mcp = `═══════════════════�
     npm install playwright && npx playwright install chromium
   Tools: navigate, click, type, read_page, screenshot, evaluate, select,
   wait, scroll, close.
+
+  Connect to your own Chrome (preserves logins and sessions):
+    google-chrome-stable --remote-debugging-port=9222
+    shmakk connect-browser                  auto-detect and connect
+    shmakk connect-browser --port 9222      connect to specific port
+    shmakk connect-browser --status         show connection status
+    shmakk connect-browser --disconnect     disconnect
 
   shmakk --mcp-status              Show configured servers and discovered tools
 `;

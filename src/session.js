@@ -233,10 +233,30 @@ async function runOneSession(opts, registerSession) {
   }
   // Generate a session ID so all turns/files this session produces can be
   // joined together in the search DB. Persists in env so subagents can tag.
-  const sessionId = sessionSearch.makeSessionId();
+  // Resume an existing session for this workspace if available and the
+  // user hasn't explicitly requested a fresh session via --new-session.
+  let sessionId = null;
+  let resumed = false;
+  if (cwd) {
+    const existing = sessionSearch.findActiveSession(cwd);
+    if (existing && !opts.newSession) {
+      sessionId = existing.id;
+      sessionSearch.updateSessionPid(sessionId, process.pid);
+      resumed = true;
+    } else if (existing && opts.newSession) {
+      // Force a new session: end the old one first
+      sessionSearch.recordSessionEnd({ sessionId: existing.id });
+    }
+  }
+  if (!sessionId) {
+    sessionId = sessionSearch.makeSessionId();
+  }
   process.env.SHMAKK_SESSION_ID = sessionId;
   audit.append({ kind: 'session-start', sessionId, workspace: cwd, pinnedWorkspace, review: !!opts.review, pid: process.pid });
   sessionSearch.recordSessionStart({ sessionId, workspace: cwd, pid: process.pid });
+  if (resumed) {
+    out(`\x1b[2m[shmakk] resumed session ${sessionId}\x1b[0m\r\n`);
+  }
 
   // Incremental audit-log index catch-up — runs once at session start, async,
   // never blocks the user. Pulls in any sessions/turns persisted by other
