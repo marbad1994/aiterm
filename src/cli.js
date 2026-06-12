@@ -176,6 +176,7 @@ Categories (shmakk --help <name> for details):
   env          Environment variable reference
   mcp          MCP servers and browser automation
   ssh          Remote host execution
+  vibedit      Visual editing overlay (web + Electron)
   self         Natural-language self-commands (inside a session)
 
 `;
@@ -413,6 +414,48 @@ HELP_SECTIONS.ssh = `═══════════════════�
       ControlPersist 600
 `;
 
+HELP_SECTIONS.vibedit = `═══════════════════════════════════════════════════════════════════════════
+  VIBEDIT  (web + Electron)
+═══════════════════════════════════════════════════════════════════════════
+
+  Vibedit is the visual editing overlay. It opens a Chromium browser tab,
+  injects a chat panel with a shadow-DOM overlay, captures screenshots for
+  vision-model analysis, and applies code changes directly to your project.
+
+  ── Web mode ──
+
+  Inside a session:
+    /vibedit <url | file | package.json | dir>
+
+  Opens a Playwright Chromium browser, injects the overlay, and auto-starts
+  a dev server if given a package.json or project directory. The overlay
+  appears as a puck in the bottom-right corner.
+
+  ── Electron mode ──
+
+  Inside a session:
+    /vibedit-electron <debug-port>
+    /ve <debug-port>              (short alias)
+
+  Connects to an already-running Electron app via Chrome DevTools Protocol.
+  The app must be launched with --remote-debugging-port=<port>.
+  No new browser window is opened — the overlay is injected into the
+  existing Electron window.
+
+  ── Specs ──
+
+  Use the overlay's Save button to capture a spec (screenshot + description).
+  The spec is immediately sent to the agent for implementation. If the
+  agent is already busy, the spec is queued and applied on the next run.
+
+  ── Dependencies ──
+
+  Both modes require:  npm install playwright && npx playwright install chromium
+  Electron mode also needs the target app's debug port accessible.
+
+  Control port (internal): 3947
+`;
+
 HELP_SECTIONS.self = `═══════════════════════════════════════════════════════════════════════════
   SELF-COMMANDS  (type inside an shmakk session)
 ═══════════════════════════════════════════════════════════════════════════
@@ -471,6 +514,11 @@ HELP_SECTIONS.self = `═══════════════════�
   enable stt  |  disable stt        Ctrl+O voice input; disables TTS/STS
   enable tts  |  disable tts        Spoken agent replies; disables STT/STS
   enable sts  |  disable sts        Always-on speech-to-speech; disables STT/TTS
+
+  -- Vibedit --
+  /vibedit <url | path>            Launch visual editing overlay on a web app
+  /vibedit-electron <port>         Connect overlay to an Electron app via CDP
+  /ve <port>                       Short alias for /vibedit-electron
 
   -- Workflows --
   list workflows                    Show available automation workflows
