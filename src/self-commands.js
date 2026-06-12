@@ -473,6 +473,31 @@ const SELF_COMMANDS = [
     action: 'sidebar-query',
     needsArg: true,
   },
+
+  // ── Vibedit ──
+  // Visual editing workflow: screenshot running app → vision LLM analysis
+  // → structured functional description → PM team delegation.
+  // Accepts a natural language request (e.g. "make the header blue").
+  {
+    patterns: [
+      /^\/?vibedit\s+(.+)$/i,
+      /^shmakk\s+vibedit\s+(.+)$/i,
+    ],
+    action: 'vibedit',
+    needsArg: true,
+  },
+
+  // ── Vibedit Electron ──
+  // Visual editing overlay connected to a live Electron desktop app via CDP.
+  {
+    patterns: [
+      /^\/?vibedit[\s-]electron\s*(.*)$/i,
+      /^shmakk\s+vibedit[\s-]electron\s*(.*)$/i,
+      /^\/?ve\s*(.*)$/i,
+    ],
+    action: 'vibedit-electron',
+    needsArg: true,
+  },
 ];
 
 // Self-command prefixes accepted by the shell:

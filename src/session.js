@@ -163,6 +163,34 @@ function makeToolConfirm(opts, ask, out, getAbort) {
   };
 }
 
+// Check all workspace roots for pending vibedit specs. If found, read the
+// spec, delete the signal file, and return formatted injection text.
+function drainPendingVibeditSpecs(roots) {
+  const specs = [];
+  for (const root of roots) {
+    const signalFile = require('path').join(root, '.vibedit', 'vibedit-specs', 'pending');
+    try {
+      if (require('fs').existsSync(signalFile)) {
+        const specPath = require('fs').readFileSync(signalFile, 'utf8').trim();
+        if (specPath && require('fs').existsSync(specPath)) {
+          const raw = require('fs').readFileSync(specPath, 'utf8');
+          require('fs').unlinkSync(signalFile);
+          specs.push({ path: specPath, content: raw });
+        }
+      }
+    } catch {}
+  }
+  if (specs.length === 0) return null;
+
+  let text = 'Implement the following vibedit specification(s). ';
+  text += 'These were produced by the visual browser editor where the user made live changes and clicked Save. ';
+  text += 'The spec describes what the user wants. You are shmakk PM: read the spec, figure out all files that need changes (may span frontend AND backend), and make the edits.\n\n';
+  for (const s of specs) {
+    text += `--- VIBEDIT SPEC (from ${s.path}) ---\n${s.content}\n\n`;
+  }
+  return text;
+}
+
 async function runOneSession(opts, registerSession) {
   const vimShim = prepareVimEnvironment(opts.vim || 'vim');
   const session = startSession({
@@ -757,6 +785,111 @@ async function runOneSession(opts, registerSession) {
           return;
         }
 
+        // ── Vibedit: start in-browser overlay chat + recorder ───────────
+        if (selfCmd.action === 'vibedit' && selfCmd.arg) {
+          // The arg is the app URL (e.g. "http://localhost:3714")
+          // Strip any surrounding whitespace or quotes
+          const arg = selfCmd.arg.trim().replace(/^['"]|['"]$/g, '');
+          // If arg looks like a URL or file path, use it directly
+          let appUrl;
+          const _fs = require('fs');
+          if (/^https?:\/\//.test(arg) || (_fs.existsSync(arg) && (_fs.statSync(arg).isFile() || _fs.statSync(arg).isDirectory()))) {
+            appUrl = arg;
+          } else {
+            // Treat as a natural language request for the visual editing workflow
+            out(`\r\n\x1b[33m[shmakk vibedit] Natural language request: ${arg}\x1b[0m\r\n`);
+            out(`\x1b[33m[shmakk vibedit] To start the overlay, use: /vibedit http://localhost:<port>\x1b[0m\r\n`);
+            session.childWrite('\r');
+            return;
+          }
+
+          try {
+            const { startVibedit } = require('./vibedit');
+            const projectDir = currentRoots()[0] || process.cwd();
+            out(`\x1b[36m[shmakk vibedit] Starting overlay on ${appUrl}...\x1b[0m\r\n`);
+            out(`\x1b[36m[shmakk vibedit] A browser window will open with the chat panel (bottom-right puck).\x1b[0m\r\n`);
+            out(`\x1b[36m[shmakk vibedit] Ctrl-C to shut down vibedit.\x1b[0m\r\n`);
+
+            const vibedit = await startVibedit({
+              projectDir,
+              appUrl,
+              onSpec: (spec, specPath) => {
+                // Spec already saved by control.js as pending signal file.
+                // drainPendingVibeditSpecs will pick it up on next agent run.
+                out(`\r\n\x1b[36m[shmakk vibedit] Spec saved! The PM agent will apply it on the next task.\x1b[0m\r\n`);
+                out(dim(`[shmakk vibedit] spec: ${spec.summary || '(no summary)'}\x1b[0m\r\n`, colorsEnabled));
+                session.childWrite('\r');
+              },
+            });
+
+            if (!vibedit) {
+              session.childWrite('\r');
+              return;
+            }
+
+            // vibedit runs until the browser closes or Ctrl-C
+            // Don't block the session - let the user keep typing commands
+            // while vibedit runs in the background
+            out(dim('[shmakk vibedit] overlay active - browser window is open\r\n', colorsEnabled));
+
+            // Store for cleanup on exit
+            if (!session._vibeditInstances) session._vibeditInstances = [];
+            session._vibeditInstances.push(vibedit);
+          } catch (e) {
+            if (e.code === 'MODULE_NOT_FOUND' && e.message.includes('playwright')) {
+              out(`\r\n\x1b[31m[shmakk vibedit] Playwright not installed. Run: npm install playwright\x1b[0m\r\n`);
+            } else {
+              out(`\r\n\x1b[31m[shmakk vibedit] error: ${e.message}\x1b[0m\r\n`);
+            }
+          }
+          session.childWrite('\r');
+          return;
+        }
+
+        if (selfCmd.action === 'vibedit-electron') {
+          const arg = (selfCmd.arg || '').trim().replace(/^['"]|['"]$/g, '');
+          let debugPort = 9222;
+          const portRe = /--port[= ](\d+)/i;
+          const portM = arg.match(portRe);
+          if (portM) debugPort = parseInt(portM[1], 10);
+          const projectDir = currentRoots()[0] || process.cwd();
+
+          try {
+            const { startVibeditElectron } = require('./vibedit/electron');
+            out(`\r\n\x1b[36m[shmakk vibedit electron] Connecting to Electron on port ${debugPort}...\x1b[0m\r\n`);
+            out(`\x1b[36m[shmakk vibedit electron] The overlay will appear in the Electron app window.\x1b[0m\r\n`);
+
+            const vibedit = await startVibeditElectron({
+              projectDir,
+              debugPort,
+              onSpec: (spec, specPath) => {
+                out(`\r\n\x1b[36m[shmakk vibedit] Spec saved! The PM agent will apply it on the next task.\x1b[0m\r\n`);
+                out(dim(`[shmakk vibedit] spec: ${spec.summary || '(no summary)'}\x1b[0m\r\n`, colorsEnabled));
+                session.childWrite('\r');
+              },
+            });
+
+            if (!vibedit) {
+              session.childWrite('\r');
+              return;
+            }
+
+            out(dim('[shmakk vibedit electron] overlay active in Electron app\r\n', colorsEnabled));
+
+            if (!session._vibeditInstances) session._vibeditInstances = [];
+            session._vibeditInstances.push(vibedit);
+          } catch (e) {
+            if (e.code === 'MODULE_NOT_FOUND' && e.message.includes('playwright')) {
+              out(`\r\n\x1b[31m[shmakk vibedit electron] Playwright not installed. Run: npm install playwright\x1b[0m\r\n`);
+            } else {
+              out(`\r\n\x1b[31m[shmakk vibedit electron] error: ${e.message}\x1b[0m\r\n`);
+            }
+          }
+          session.childWrite('\r');
+          return;
+        }
+
+
         if (selfCmd.confirm) {
           const go = await ask(`Run ${selfCmd.action}?`, true, { onCancel: () => {} });
           if (!go) { session.childWrite('\r'); return; }
@@ -1003,8 +1136,11 @@ async function runOneSession(opts, registerSession) {
             }
 
             const taskInput = `[Task ${i + 1} of ${plan.tasks.length}: ${task.title}]\n${task.description}\n\nOverall goal: ${plan.title}\n\nOriginal request: ${cmd}`;
+            // Inject any pending vibedit specs
+            const specInjection = drainPendingVibeditSpecs(currentRoots());
+            const fullTaskInput = specInjection ? `${specInjection}\n\n---\n\n${taskInput}` : taskInput;
             try {
-              const updated = await runAgent({ ...agentOpts, input: taskInput, history });
+              const updated = await runAgent({ ...agentOpts, input: fullTaskInput, history });
               history = trimHistory(updated || history);
               lastUpdated = updated;
               plan.tasks[i].status = 'completed';
@@ -1086,9 +1222,12 @@ async function runOneSession(opts, registerSession) {
         const taskIndicator = routing.indicator
           ? `\x1b[36m[shmakk task · ${routing.indicator}] (Ctrl-C to interrupt)\x1b[0m\r\n`
           : '\x1b[36m[shmakk task] (Ctrl-C to interrupt)\x1b[0m\r\n';
+        // Inject any pending vibedit specs before running the agent
+        const specInjection = drainPendingVibeditSpecs(currentRoots());
+        const fullCmd = specInjection ? `${specInjection}\n\n---\n\nUser also typed: ${cmd}` : cmd;
         out(taskIndicator);
         try {
-          const updated = await runAgent({ ...agentOpts, input: cmd, history });
+          const updated = await runAgent({ ...agentOpts, input: fullCmd, history });
           history = trimHistory(updated || history);
 
           // TTS: speak the agent's response aloud if --tts is active
