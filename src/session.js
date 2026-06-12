@@ -508,6 +508,62 @@ async function runOneSession(opts, registerSession) {
   // ── Continuous voice loop (--sts always-on) ──
   // When --sts is active, runs a background loop: listen → transcribe → inject.
   // No hotkey needed — just speak and pause.
+
+  // ── Vibedit spec trigger ──
+  // Called from the vibedit onSpec callback when the user clicks Save in the
+  // overlay. Drains pending specs, runs the agent immediately, and updates
+  // history/session search — just like the normal command loop.
+  let specRunBusy = false;
+  async function runVibeditSpecNow(spec, specPath) {
+    if (specRunBusy) {
+      // Spec is already saved to the pending signal file. The currently
+      // running agent (or the next user command) will pick it up.
+      out(dim('[shmakk vibedit] spec queued — agent busy, will apply next', colorsEnabled) + '\r\n');
+      return;
+    }
+    if (!isConfigured()) {
+      out('\r\n\x1b[33m[shmakk vibedit] LLM not configured — spec saved but cannot apply yet\x1b[0m\r\n');
+      session.childWrite('\r');
+      return;
+    }
+    specRunBusy = true;
+    try {
+      await withAI(async (ctrl) => {
+        const specInjection = drainPendingVibeditSpecs(currentRoots());
+        if (!specInjection) {
+          out('\r\n\x1b[33m[shmakk vibedit] no pending specs found\x1b[0m\r\n');
+          return;
+        }
+        out('\x1b[36m[shmakk vibedit] applying spec immediately... (Ctrl-C to interrupt)\x1b[0m\r\n');
+        out(dim(`[shmakk vibedit] spec: ${spec.summary || '(no summary)'}`, colorsEnabled) + '\r\n');
+        try {
+          const updated = await runAgent({
+            roots: currentRoots(),
+            glossary,
+            confirmTool: makeToolConfirm(opts, ask, out, () => ctrl.abort()),
+            write: out,
+            signal: ctrl.signal,
+            profile: opts.profile || 'balanced',
+            colors: colorsEnabled,
+            markdown: markdownEnabled,
+            mcpManager,
+            input: specInjection,
+            history,
+          });
+          history = trimHistory(updated || history);
+          out(dim('\r\n[shmakk vibedit] spec applied', colorsEnabled) + '\r\n');
+        } catch (e) {
+          if (isAbortError(e)) {
+            // already signaled
+          } else {
+            out(`\r\n\x1b[31m[shmakk vibedit] error applying spec: ${e.message}\x1b[0m\r\n`);
+          }
+        }
+      });
+    } finally {
+      specRunBusy = false;
+    }
+  }
   // Pauses while TTS is speaking to avoid feedback loop.
   let stsLoopStarted = false;
   function startStsLoop() {
@@ -814,11 +870,9 @@ async function runOneSession(opts, registerSession) {
               projectDir,
               appUrl,
               onSpec: (spec, specPath) => {
-                // Spec already saved by control.js as pending signal file.
-                // drainPendingVibeditSpecs will pick it up on next agent run.
-                out(`\r\n\x1b[36m[shmakk vibedit] Spec saved! The PM agent will apply it on the next task.\x1b[0m\r\n`);
+                out(`\r\n\x1b[36m[shmakk vibedit] Spec saved!\x1b[0m\r\n`);
                 out(dim(`[shmakk vibedit] spec: ${spec.summary || '(no summary)'}\x1b[0m\r\n`, colorsEnabled));
-                session.childWrite('\r');
+                runVibeditSpecNow(spec, specPath);
               },
             });
 
@@ -863,9 +917,9 @@ async function runOneSession(opts, registerSession) {
               projectDir,
               debugPort,
               onSpec: (spec, specPath) => {
-                out(`\r\n\x1b[36m[shmakk vibedit] Spec saved! The PM agent will apply it on the next task.\x1b[0m\r\n`);
+                out(`\r\n\x1b[36m[shmakk vibedit] Spec saved!\x1b[0m\r\n`);
                 out(dim(`[shmakk vibedit] spec: ${spec.summary || '(no summary)'}\x1b[0m\r\n`, colorsEnabled));
-                session.childWrite('\r');
+                runVibeditSpecNow(spec, specPath);
               },
             });
 
