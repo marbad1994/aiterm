@@ -9,7 +9,6 @@ const NOTIFY_BIN = 'notify-send';
 
 function available() {
   try {
-    // Prefer direct path check; fall back to `command -v` if not at known paths
     if (existsSync('/usr/bin/notify-send')) return true;
     if (existsSync('/usr/local/bin/notify-send')) return true;
     execFileSync('command', ['-v', NOTIFY_BIN], { stdio: 'ignore' });
@@ -29,9 +28,58 @@ function notify(summary, body, urgency) {
   if (urgency === 'critical') args.push('--urgency=critical');
   if (urgency === 'low') args.push('--urgency=low');
   execFile(NOTIFY_BIN, args, (err) => {
-    // Silently ignore — notification daemon may not be running.
     void err;
   });
 }
 
-module.exports = { notify, available };
+// Interactive notification with Yes/No action buttons.
+// Returns { promise, proc } where:
+//   promise resolves to 'yes', 'no', or null (dismissed/error)
+//   proc is the child process (call .kill() to cancel)
+function notifyAsk(summary, body) {
+  if (!available()) return { promise: Promise.resolve(null), proc: null };
+
+  const args = [
+    summary || 'shmakk',
+    body || '',
+    '--app-name=shmakk',
+    '--category=im.received',
+    '--urgency=critical',
+    '--expire-time=30000',
+    '--action=yes=Yes',
+    '--action=no=No',
+    '--wait',
+  ];
+
+  let settled = false;
+  let proc;
+
+  const promise = new Promise((resolve) => {
+    proc = execFile(NOTIFY_BIN, args, { timeout: 60000, encoding: 'utf8' }, (err, stdout) => {
+      if (settled) return;
+      settled = true;
+      if (err) {
+        resolve(null);
+        return;
+      }
+      const action = (stdout || '').trim().toLowerCase();
+      if (action === 'yes' || action === 'no') {
+        resolve(action);
+      } else {
+        resolve(null);
+      }
+    });
+  });
+
+  return {
+    promise,
+    get proc() { return proc; },
+    cancel() {
+      if (settled) return;
+      settled = true;
+      try { proc.kill(); } catch {}
+    },
+  };
+}
+
+module.exports = { notify, notifyAsk, available };

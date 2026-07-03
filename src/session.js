@@ -11,7 +11,6 @@ const { clearIndex } = require('./workspace-index');
 const { loadGlossary } = require('./glossary');
 const { isConfigured } = require('./llm');
 const { makePrompter, decisionBanner } = require('./review');
-const { notify } = require('./notify');
 const { workspaceWarning } = require('./safety');
 const { createMCPManager } = require('./mcp-client');
 const { clearEdits } = require('./edit-tracker');
@@ -21,6 +20,7 @@ const { addPlanTasks, markTaskComplete, markTaskSkipped } = require('./task-file
 const { captureGitSha, runPostPlanReview } = require('./code-reviewer');
 const sessionSearch = require('./session-search');
 const { HELP, HELP_SUMMARY, HELP_SESSION_SUMMARY } = require('./cli');
+const { vibeditState } = require('./vibedit/state');
 const audit = require('./audit');
 const { setMaxListeners } = require('events');
 const { prepareVimEnvironment } = require('./vim');
@@ -157,6 +157,7 @@ function makeToolConfirm(opts, ask, out, getAbort) {
     const ok = await ask('Run?', wouldAuto, {
       onCancel: getAbort,
       onWhy: showWhy,
+      notifyBody: description,
     });
     audit.append({ kind: ok ? 'tool-allowed' : 'tool-declined', name, args });
     return ok;
@@ -168,7 +169,7 @@ function makeToolConfirm(opts, ask, out, getAbort) {
 function drainPendingVibeditSpecs(roots) {
   const specs = [];
   for (const root of roots) {
-    const signalFile = require('path').join(root, '.vibedit', 'vibedit-specs', 'pending');
+    const signalFile = vibeditState(root).pendingSpecFile;
     try {
       if (require('fs').existsSync(signalFile)) {
         const specPath = require('fs').readFileSync(signalFile, 'utf8').trim();
@@ -212,9 +213,18 @@ async function runOneSession(opts, registerSession) {
   let cwd = pinnedWorkspace || process.cwd();
 
   function currentRoots() {
-    if (!pinnedWorkspace) return [require('path').resolve(cwd)];
+    const tmp = '/tmp';
+    if (!pinnedWorkspace) {
+      const r = [require('path').resolve(cwd)];
+      if (tmp !== r[0] && !r[0].startsWith(tmp + '/')) r.push(tmp);
+      return r;
+    }
     const c = require('path').resolve(cwd);
-    return c === pinnedWorkspace ? [pinnedWorkspace] : [pinnedWorkspace, c];
+    const r = c === pinnedWorkspace ? [pinnedWorkspace] : [pinnedWorkspace, c];
+    if (tmp !== r[0] && !r[0].startsWith(tmp + '/')) {
+      if (r.length < 2 || (tmp !== r[1] && !r[1].startsWith(tmp + '/'))) r.push(tmp);
+    }
+    return r;
   }
 
   // ── MCP server setup ──
@@ -884,7 +894,7 @@ async function runOneSession(opts, registerSession) {
             const projectDir = currentRoots()[0] || process.cwd();
             out(`\x1b[36m[shmakk vibedit] Starting overlay on ${appUrl}...\x1b[0m\r\n`);
             out(`\x1b[36m[shmakk vibedit] A browser window will open with the chat panel (bottom-right puck).\x1b[0m\r\n`);
-            out(`\x1b[36m[shmakk vibedit] Ctrl-C to shut down vibedit.\x1b[0m\r\n`);
+            out(`\x1b[36m[shmakk vibedit] Close the browser window to shut down this vibedit.\x1b[0m\r\n`);
 
             const vibedit = await startVibedit({
               projectDir,
@@ -904,7 +914,7 @@ async function runOneSession(opts, registerSession) {
             // vibedit runs until the browser closes or Ctrl-C
             // Don't block the session - let the user keep typing commands
             // while vibedit runs in the background
-            out(dim('[shmakk vibedit] overlay active - browser window is open\r\n', colorsEnabled));
+            out(dim(`[shmakk vibedit] overlay active on control port ${vibedit.port}\r\n`, colorsEnabled));
 
             // Store for cleanup on exit
             if (!session._vibeditInstances) session._vibeditInstances = [];
@@ -948,7 +958,7 @@ async function runOneSession(opts, registerSession) {
               return;
             }
 
-            out(dim('[shmakk vibedit electron] overlay active in Electron app\r\n', colorsEnabled));
+            out(dim(`[shmakk vibedit electron] overlay active on control port ${vibedit.port}\r\n`, colorsEnabled));
 
             if (!session._vibeditInstances) session._vibeditInstances = [];
             session._vibeditInstances.push(vibedit);
@@ -1057,6 +1067,7 @@ async function runOneSession(opts, registerSession) {
             `- Reason: ${decision.reason || 'deterministic match'}`,
             '',
           ].join('\r\n')),
+          notifyBody: cmd,
         });
         if (go) { correctionOrigin = cmd; audit.append({ kind: 'correction-run', proposed: decision.proposed }); session.childWrite(decision.proposed + '\r'); }
         return;
@@ -1082,6 +1093,7 @@ async function runOneSession(opts, registerSession) {
           `- Reason: ${decision.reason || 'deterministic match'}`,
           '',
         ].join('\r\n')),
+        notifyBody: cmd,
       });
       if (go) { correctionOrigin = cmd; audit.append({ kind: 'correction-run', proposed: decision.proposed }); session.childWrite(decision.proposed + '\r'); }
       return;
