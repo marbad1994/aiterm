@@ -11,19 +11,18 @@ const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 const { startControlServer } = require('./control');
+const { ensureVibeditState } = require('./state');
 
-const VIBEDIT_CONTROL_PORT = 3947;
+const VIBEDIT_CONTROL_PORT = 0;
 const DEFAULT_CDP_PORT = 9222;
 
 async function startVibeditElectron(opts) {
   let { projectDir, debugPort, onSpec } = opts;
 
   const cdpPort = debugPort || DEFAULT_CDP_PORT;
-  const stateDir = path.join(projectDir, '.vibedit');
-  fs.mkdirSync(path.join(stateDir, 'sessions'), { recursive: true });
-  fs.mkdirSync(path.join(stateDir, 'backups'), { recursive: true });
+  const state = ensureVibeditState(projectDir);
 
-  const port = opts.port || VIBEDIT_CONTROL_PORT;
+  const port = opts.port ?? VIBEDIT_CONTROL_PORT;
   const wsEndpoint = `http://127.0.0.1:${cdpPort}`;
 
   console.log(`[shmakk vibedit electron] connecting to Electron on port ${cdpPort}...`);
@@ -57,18 +56,24 @@ async function startVibeditElectron(opts) {
   // Start the control server (reuses the same WebSocket + HTTP stack).
   const control = await startControlServer({
     port,
-    stateDir,
+    stateDir: state.stateDir,
+    sessionsDir: state.sessionsDir,
+    specsDir: state.specsDir,
+    pendingSpecFile: state.pendingSpecFile,
+    automationsDir: state.automationsDir,
+    pageStateFile: state.pageStateFile,
     page,
     projectDir,
     onSpec,
   });
-  console.log(`[shmakk vibedit electron] control: ws://127.0.0.1:${port}`);
+  const controlPort = control.port;
+  console.log(`[shmakk vibedit electron] control: ws://127.0.0.1:${controlPort}`);
 
   // Inject overlay. Since the Electron page is already loaded, we can't use
   // addInitScript for the existing page, but we register it for any new pages
   // and manually inject into the current page.
   const overlayJs = fs.readFileSync(path.join(__dirname, 'overlay.js'), 'utf8');
-  const boot = `window.__VIBEDIT__ = { port: ${port} };\n${overlayJs}`;
+  const boot = `window.__VIBEDIT__ = { port: ${controlPort} };\n${overlayJs}`;
 
   // Register init script for future navigations / new pages.
   await ctx.addInitScript({ content: boot });
@@ -85,13 +90,19 @@ async function startVibeditElectron(opts) {
 
   await page.waitForTimeout(500);
 
-  const shutdown = async () => {
-    console.log('\n[shmakk vibedit electron] shutting down');
+  let closed = false;
+  const shutdown = async (reason = 'requested') => {
+    if (closed) return;
+    closed = true;
+    console.log(`\n[shmakk vibedit electron] shutting down (${reason})`);
     try { await browser.close(); } catch {}
     control.close();
   };
 
-  return { browser, control, shutdown };
+  page.on('close', () => { shutdown('electron window closed'); });
+  browser.on('disconnected', () => { shutdown('electron disconnected'); });
+
+  return { browser, control, port: controlPort, shutdown };
 }
 
 module.exports = { startVibeditElectron, VIBEDIT_CONTROL_PORT, DEFAULT_CDP_PORT };

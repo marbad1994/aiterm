@@ -76,6 +76,15 @@ async function main() {
     opts.markdown = v === 'true';
   }
 
+  if (opts.browserDaemon) {
+    const { main: runBrowserDaemon } = require('./cli/browserDaemon');
+    process.exit(await runBrowserDaemon([
+      'browser-daemon',
+      ...(opts.browserDaemonPort ? ['--port', String(opts.browserDaemonPort)] : []),
+      ...(opts.help ? ['--help'] : []),
+    ]));
+  }
+
   if (opts.help) {
     process.stdout.write(resolveHelp(opts.helpCategory));
     process.exit(0);
@@ -150,7 +159,7 @@ async function main() {
     process.exit(0);
   }
 
-  if (opts.status || opts.stats || opts.compact || opts.loadSkill || opts.installSkill || opts.listSkills || opts.skillStatus || opts.unloadSkill || opts.resumeStatus || opts.showPlan || opts.mcpStatus || opts.exitNow || opts.restart || opts.reset || opts.profileSet) {
+  if (opts.status || opts.stats || opts.compact || opts.loadSkill || opts.installSkill || opts.listSkills || opts.skillStatus || opts.unloadSkill || opts.resumeStatus || opts.showPlan || opts.mcpStatus || opts.consolidateWorkspace || opts.exitNow || opts.restart || opts.reset || opts.profileSet) {
     const ctl = require('./control');
     if (opts.status) process.exit(ctl.status());
     if (opts.stats) process.exit(ctl.stats());
@@ -163,6 +172,7 @@ async function main() {
     if (opts.resumeStatus) process.exit(ctl.resumeStatus());
     if (opts.showPlan) process.exit(ctl.showPlan());
     if (opts.mcpStatus) process.exit(ctl.mcpStatus());
+    if (opts.consolidateWorkspace) process.exit(ctl.consolidateWorkspace());
     if (opts.exitNow) process.exit(ctl.exitParent());
     if (opts.restart) process.exit(ctl.restartParent());
     if (opts.reset) process.exit(ctl.resetConversation());

@@ -451,6 +451,18 @@ const SELF_COMMANDS = [
     confirm: true,
   },
 
+  // ── Workspace consolidation ──
+  {
+    patterns: [
+      /^consolidate\s+workspace$/i,
+      /^merge\s+workspace$/i,
+      /^merge\s+\.shmakk$/i,
+      /^consolidate\s+\.shmakk$/i,
+    ],
+    action: 'consolidate-workspace',
+    confirm: true,
+  },
+
   // ── Edit review ──
   {
     patterns: [
@@ -666,6 +678,7 @@ function executeSelfCommand(match, write, ctx = {}) {
     case 'mcp-status':    ctl.mcpStatus(); break;
     case 'compact':       ctl.compactContext(); break;
     case 'reset':         ctl.resetConversation(); break;
+    case 'consolidate-workspace': ctl.consolidateWorkspace(); break;
 
     case 'show-rules': {
       const { loadRules, rulesStatus } = require('./rules');

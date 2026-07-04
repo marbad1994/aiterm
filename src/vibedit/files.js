@@ -10,7 +10,7 @@ const SOURCE_EXT = new Set([
 ]);
 const IGNORE_DIRS = new Set([
   "node_modules", ".git", "dist", "build", ".next", ".nuxt", ".output",
-  ".vibedit", ".shmakk", "coverage", ".cache", ".svelte-kit", "out", "vendor"
+    ".shmakk", "coverage", ".cache", ".svelte-kit", "out", "vendor"
 ]);
 const MAX_FILE_BYTES = 400_000;
 const MAX_SHORTLIST = 5;

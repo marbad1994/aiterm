@@ -3,7 +3,8 @@
 (() => {
   if (window.__vibeditLoaded) return;
   window.__vibeditLoaded = true;
-  const PORT = (window.__VIBEDIT__ && window.__VIBEDIT__.port) || 8417;
+  const PORT = window.__VIBEDIT__ && window.__VIBEDIT__.port;
+  if (!PORT) return;
 
   // addInitScript fires before the document has parsed anything, so
   // document.documentElement and document.body may not exist yet.
@@ -28,7 +29,8 @@
     x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
     send: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>',
     plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
-    camera: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>'
+    camera: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>',
+    automate: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>'
   };
 
   const CSS = `
@@ -71,6 +73,7 @@
 .btn:hover { background: #262a32; border-color: #3a3e49; }
 .btn.active { background: #2c2417; border-color: #6b5523; color: #e8a33d; }
 .btn.rec { background: #2c1717; border-color: #6b2323; color: #e25555; }
+.btn.automation { background: #1d242c; border-color: #3a5068; color: #5b9bd5; }
 .btn.danger { color: #c66; }
 .btn.danger:hover { background: #2c1717; border-color: #6b2323; }
 .btn svg { width: 13px; height: 13px; flex-shrink: 0; }
@@ -89,7 +92,11 @@
 .savedrop .droprow button svg { width: 12px; height: 12px; }
 .savedrop .dropact { padding: 8px 12px; border-top: 1px solid #23262e; display: flex; gap: 6px; justify-content: flex-end; }
 
-.msgs { flex: 1 1 auto; min-height: 400px; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+.msgs { flex: 1 1 auto; min-height: 400px; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; scrollbar-width: thin; scrollbar-color: #2c2f38 transparent; }
+.msgs::-webkit-scrollbar { width: 5px; }
+.msgs::-webkit-scrollbar-track { background: transparent; }
+.msgs::-webkit-scrollbar-thumb { background: #2c2f38; border-radius: 3px; }
+.msgs::-webkit-scrollbar-thumb:hover { background: #3a3e49; }
 .msg-user { max-width: 92%; padding: 8px 11px; border-radius: 11px; font-size: 12.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; align-self: flex-end; background: #2c2417; color: #f1d9ab; border: 1px solid #463a1d; border-left: 3px solid #e8a33d; }
 .msg-ai   { max-width: 92%; padding: 8px 11px; border-radius: 11px; font-size: 12.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; align-self: flex-start; background: #1d2026; border: 1px solid #2c2f38; border-left: 3px solid #4da6e8; }
 .msg-sys  { max-width: 92%; padding: 2px 11px; border-radius: 11px; font-size: 11px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; align-self: center; color: #8b909d; background: none; border-left: none; }
@@ -100,13 +107,14 @@
 .msglabel-user { background: #463a1d; color: #e8a33d; }
 .msglabel-ai   { background: #1a2d3d; color: #4da6e8; }
 .msglabel-context { background: #1d2620; color: #8bbf6a; }
+.msglabel-instruction { background: #1d2a3d; color: #5b9bd5; }
 .msg-flow { max-width: 100%; padding: 10px 12px; border-radius: 11px; font-size: 12.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; align-self: stretch; background: #1d2026; border: 1px solid #2c2f38; border-left: 3px solid transparent; display: flex; flex-direction: column; gap: 8px; }
-.flow img { width: 100%; max-height: 200px; object-fit: contain; border-radius: 9px; border: 1px solid #2c2f38; background: #0f1116; min-height: 60px; }
-.flow .scrub { display: flex; align-items: center; gap: 8px; }
-.flow input[type=range] { flex: 1; accent-color: #e8a33d; }
-.flow .pbtn { background: #1d2026; border: 1px solid #2c2f38; border-radius: 8px; color: #cfd3dc; padding: 5px 8px; cursor: pointer; display: inline-flex; }
-.flow .pbtn svg { width: 13px; height: 13px; }
-.flow .evt { font-size: 11px; color: #8b909d; min-height: 14px; }
+.msg-flow img { width: 100%; max-height: 200px; object-fit: contain; border-radius: 9px; border: 1px solid #2c2f38; background: #0f1116; min-height: 60px; }
+.msg-flow .scrub { display: flex; align-items: center; gap: 8px; }
+.msg-flow input[type=range] { flex: 1; accent-color: #e8a33d; }
+.msg-flow .pbtn { background: #1d2026; border: 1px solid #2c2f38; border-radius: 8px; color: #cfd3dc; padding: 5px 8px; cursor: pointer; display: inline-flex; }
+.msg-flow .pbtn svg { width: 13px; height: 13px; }
+.msg-flow .evt { font-size: 11px; color: #8b909d; min-height: 14px; }
 
 .inspector { border-top: 1px solid #23262e; padding: 10px 12px; display: none; flex-direction: column; gap: 8px; flex: 0 1 auto; min-height: 400px; overflow-y: auto; }
 .inspector.open { display: flex; }
@@ -146,6 +154,38 @@
 .composer textarea {
   flex: 1; resize: none; height: 54px; background: #0f1116; color: #e7e9ee;
   border: 1px solid #2c2f38; border-radius: 10px; padding: 8px 10px;
+  font-size: 12px; outline: none;
+}
+.composer textarea:focus { border-color: #6b5523; }
+.composer textarea.automation { border-color: #3a5068; }
+.composer textarea.automation:focus { border-color: #5b9bd5; }
+.composer button {
+  background: #2c2417; border: 1px solid #6b5523; border-radius: 10px;
+  color: #e8a33d; cursor: pointer; padding: 8px 12px; display: inline-flex;
+  align-items: center; justify-content: center;
+}
+.composer button:hover { background: #463a1d; }
+.composer button.automation { background: #1d242c; border-color: #3a5068; color: #5b9bd5; }
+.composer button.automation:hover { background: #263648; }
+
+.msg-instruction {
+  max-width: 92%; padding: 8px 11px; border-radius: 11px; font-size: 12.5px;
+  line-height: 1.45; white-space: pre-wrap; word-break: break-word;
+  align-self: flex-end;
+  background: #1d242c; color: #b8d4f0; border: 1px solid #3a5068;
+  border-left: 3px solid #5b9bd5;
+}
+
+.automation-banner {
+  padding: 6px 12px; background: #1d242c; border-bottom: 1px solid #3a5068;
+  color: #5b9bd5; font-size: 11px; font-weight: 600;
+  display: none; align-items: center; gap: 8px;
+  flex: 0 0 auto;
+}
+.automation-banner svg { width: 14px; height: 14px; }
+.automation-banner .inst-count { color: #8ea4c2; font-weight: 400; margin-left: auto; }
+.panel.automation .automation-banner { display: flex; }
+.panel.automation .composer { border-top-color: #3a5068; }
   font-size: 12.5px; outline: none;
 }
 .composer textarea:focus { border-color: #6b5523; }
@@ -155,9 +195,7 @@
 }
 .composer button:disabled { opacity: .5; cursor: default; }
 .composer button svg { width: 16px; height: 16px; }
-.composer .shotbtn { background: transparent; border: 1px solid #2c2f38; color: #8b909d; }
-.composer .shotbtn:hover { color: #4da6e8; border-color: #4da6e8; }
-.composer .shotbtn.active { color: #4da6e8; border-color: #4da6e8; background: rgba(77,166,232,.12); }
+.btn.hasShots { background: #2c2617; border-color: #6b5a23; color: #e8b84d; }
 
 .hl { position: fixed; pointer-events: none; z-index: 2147483645; border: 1.5px dashed #e8a33d; border-radius: 3px; display: none; }
 .hl.sel { border-style: solid; box-shadow: 0 0 0 3px rgba(232,163,61,.22); }
@@ -191,7 +229,10 @@
           <span class="savewrap"><button class="btn" id="saveBtn" title="Review changes">${ICONS.save}</button>
             <div class="savedrop" id="savedrop"></div></span>
           <button class="btn" id="flowBtn" title="Record userflow">${ICONS.record}</button>
+          <button class="btn" id="shotBtn" title="Screenshot area for context">${ICONS.camera}</button>
+          <button class="btn" id="automationBtn" title="Automation mode">${ICONS.automate}</button>
         </div>
+        <div class="automation-banner" id="automationBanner">${ICONS.automate} Automation mode active<span class="inst-count" id="instCount">0 instructions</span></div>
         <div class="msgs" id="msgs"></div>
         <div class="inspector" id="inspector">
           <div class="sel" id="selPath"></div>
@@ -203,6 +244,12 @@
             <button class="iconbtn" id="deselBtn" title="Deselect" style="color:#8b909d">${ICONS.x}</button>
           </div>
           <div class="row" id="textRow"><label>Text</label><input type="text" id="inText"></div>
+          <div class="row" id="insertRow">
+            <label>Add</label>
+            <select class="scopesel" id="insertTag"><option value="p">p</option><option value="div">div</option><option value="span">span</option><option value="button">button</option><option value="h2">h2</option><option value="li">li</option></select>
+            <button class="btn small" id="addChild">${ICONS.plus}<span>Inside</span></button>
+            <button class="btn small" id="addAfter">${ICONS.plus}<span>After</span></button>
+          </div>
           <div class="row">
             <label>Color</label><input type="color" id="inColor">
             <label style="width:auto">Bg</label><input type="color" id="inBg">
@@ -212,7 +259,6 @@
           <button class="btn small" id="addProp">${ICONS.plus}<span>Add CSS property</span></button>
         </div>
         <div class="composer">
-          <button id="shotBtn" class="shotbtn" title="Screenshot area for context">${ICONS.camera}</button>
           <textarea id="chatText" placeholder="Ask for a change... e.g. make the header dark blue"></textarea>
           <button id="chatSend">${ICONS.send}</button>
         </div>
@@ -231,10 +277,13 @@
   let screenshotMode = false, justShot = false;
   let shotStartX = 0, shotStartY = 0;
   let recordingFlow = false;
+  let automationMode = false;
+  let automationInstructions = [];
   let session = null; // { id, base, shots, events }
   let flowMsg = null;  // inline flow message DOM element
-  let pendingScreenshot = null; // base64 JPEG waiting to be included in chat
-  let pendingScreenshotMsg = null; // DOM element for the preview
+  let pendingScreenshots = []; // array of { id, data } — base64 JPEGs waiting to be included in chat
+  let screenshotIdCounter = 0;
+  let pendingScreenshotMsgs = []; // DOM elements for the preview rows
   const changes = new Map(); // selector -> { selector, before, removed? }
 
   const { root } = mount();
@@ -244,9 +293,11 @@
     editBtn: $("editBtn"), saveBtn: $("saveBtn"), savedrop: $("savedrop"), flowBtn: $("flowBtn"),
     msgs: $("msgs"), inspector: $("inspector"), selPath: $("selPath"),
     chips: $("chips"), scopeSel: $("scopeSel"), textRow: $("textRow"), props: $("props"), addProp: $("addProp"),
+    insertRow: $("insertRow"), insertTag: $("insertTag"), addChild: $("addChild"), addAfter: $("addAfter"),
     inText: $("inText"), inColor: $("inColor"), inBg: $("inBg"), inSize: $("inSize"),
     delBtn: $("delBtn"), deselBtn: $("deselBtn"),
-    chatText: $("chatText"), chatSend: $("chatSend"), shotBtn: $("shotBtn"),
+    chatText: $("chatText"), chatSend: $("chatSend"), shotBtn: $("shotBtn"), automationBtn: $("automationBtn"),
+    automationBanner: $("automationBanner"), instCount: $("instCount"),
     hoverHl: $("hoverHl"), selHl: $("selHl"), shotHl: $("shotHl")
   };
 
@@ -374,7 +425,7 @@
     const selector = cssPath(el);
     if (!changes.has(selector)) {
       changes.set(selector, {
-        kind: "dom", selector, before: el.outerHTML, el,
+        kind: "dom", selector, before: el.outerHTML, beforeText: directText(el), el,
         parent: el.parentNode, next: el.nextSibling
       });
     }
@@ -382,9 +433,31 @@
     return changes.get(selector);
   }
 
+  function markTextChange(el) {
+    const rec = trackBefore(el);
+    rec.afterText = directText(el);
+    rec.after = el.outerHTML;
+    updateCount();
+    saveLocalStateSoon();
+    return rec;
+  }
+
+  function setCaretAtEnd(el) {
+    try {
+      el.focus({ preventScroll: true });
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } catch {}
+  }
+
   function updateCount() {
     ui.saveBtn.classList.toggle("hasChanges", changes.size > 0);
     if (!changes.size) ui.savedrop.classList.remove("open");
+    saveLocalStateSoon();
   }
 
   function revertChange(key) {
@@ -418,6 +491,8 @@
       div.innerHTML = `<span class="msglabel-user">You</span> ${esc(text)}`;
     } else if (kind === "ai") {
       div.innerHTML = `<span class="msglabel-ai">AI</span> ${esc(text)}`;
+    } else if (kind === "instruction") {
+      div.innerHTML = `<span class="msglabel-instruction">Instruction</span> ${esc(text)}`;
     } else {
       if (/^Context: /.test(text)) {
         div.classList.add("msg-context");
@@ -433,26 +508,47 @@
   }
   function esc(s) { return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 
-  function showScreenshotPreview() {
-    if (pendingScreenshotMsg) pendingScreenshotMsg.remove();
+  function addScreenshotPreview(id, data) {
     const div = document.createElement("div");
     div.className = "msg-sys shot-preview";
-    div.innerHTML = `<div style="position:relative;display:inline-block;max-width:280px"><img src="data:image/jpeg;base64,${pendingScreenshot}" style="width:100%;border-radius:8px;display:block"><button class="btn danger" id="shotDiscard" title="Remove screenshot" style="position:absolute;top:4px;right:4px;padding:3px 6px;border-radius:6px;background:rgba(22,24,29,.85)">${ICONS.x}</button></div>`;
+    div.setAttribute("data-shot-id", id);
+    div.innerHTML = `<div style="position:relative;display:inline-block;max-width:280px"><img src="data:image/jpeg;base64,${data}" style="width:100%;border-radius:8px;display:block"><button class="btn danger shot-discard" title="Remove screenshot" style="position:absolute;top:4px;right:4px;padding:3px 6px;border-radius:6px;background:rgba(22,24,29,.85)">${ICONS.x}</button></div>`;
     ui.msgs.appendChild(div);
     ui.msgs.scrollTop = ui.msgs.scrollHeight;
-    pendingScreenshotMsg = div;
-    div.querySelector("#shotDiscard").addEventListener("click", discardScreenshot);
+    pendingScreenshotMsgs.push(div);
+    div.querySelector(".shot-discard").addEventListener("click", () => discardScreenshot(id));
+    updateShotCount();
   }
 
-  function discardScreenshot() {
-    pendingScreenshot = null;
-    if (pendingScreenshotMsg) { pendingScreenshotMsg.remove(); pendingScreenshotMsg = null; }
+  function discardScreenshot(id) {
+    pendingScreenshots = pendingScreenshots.filter((s) => s.id !== id);
+    const el = ui.msgs.querySelector(`.shot-preview[data-shot-id="${id}"]`);
+    if (el) el.remove();
+    pendingScreenshotMsgs = pendingScreenshotMsgs.filter((d) => d.getAttribute("data-shot-id") !== String(id));
+    updateShotCount();
+    saveLocalStateSoon();
+  }
+
+  function clearAllScreenshots() {
+    for (const el of pendingScreenshotMsgs) el.remove();
+    pendingScreenshots = [];
+    pendingScreenshotMsgs = [];
+    updateShotCount();
+    saveLocalStateSoon();
+  }
+
+  function updateShotCount() {
+    ui.shotBtn.classList.toggle("hasShots", pendingScreenshots.length > 0);
   }
 
   // ---- websocket ---------------------------------------------------------
   function connect() {
     ws = new WebSocket(`ws://127.0.0.1:${PORT}`);
-    ws.onopen = () => { wsOpen = true; ui.dot.classList.add("on"); };
+    ws.onopen = () => {
+      wsOpen = true;
+      ui.dot.classList.add("on");
+      send({ type: "pageStateGet" });
+    };
     ws.onclose = () => { wsOpen = false; ui.dot.classList.remove("on"); setTimeout(connect, 1500); };
     ws.onmessage = (e) => {
       let msg; try { msg = JSON.parse(e.data); } catch { return; }
@@ -461,9 +557,81 @@
   }
   function send(obj) { if (wsOpen) ws.send(JSON.stringify(obj)); }
 
+  let stateSaveTimer = null;
+  function saveLocalStateSoon() {
+    clearTimeout(stateSaveTimer);
+    stateSaveTimer = setTimeout(saveLocalState, 120);
+  }
+
+  function saveLocalState() {
+    if (!wsOpen) return;
+    send({
+      type: "pageStateSet",
+      state: {
+        panelOpen: ui.panel.classList.contains("open"),
+        automationMode,
+        automationInstructions,
+        pendingScreenshots: pendingScreenshots.map((s) => ({ id: s.id, size: (s.data || "").length })),
+        currentFlowSession: session ? {
+          id: session.id,
+          base: session.base,
+          shots: session.shots,
+          events: session.events,
+        } : null,
+        visualChanges: [...changes.values()].map((c) => ({
+          kind: c.kind,
+          selector: c.selector,
+          before: c.before,
+          beforeText: c.beforeText || "",
+          after: c.kind === "css" ? (c.after || "") : (c.removed ? "" : (c.el && c.el.isConnected ? c.el.outerHTML : "")),
+          afterText: c.afterText || "",
+          addedHTML: c.addedHTML || "",
+          removed: !!c.removed,
+        })),
+      },
+    });
+  }
+
+  function restoreLocalState(saved) {
+    if (!saved || typeof saved !== "object") return;
+    ui.panel.classList.toggle("open", !!saved.panelOpen);
+    if (Array.isArray(saved.automationInstructions)) {
+      automationInstructions = saved.automationInstructions.filter((s) => typeof s === "string");
+    }
+    setAutomationMode(!!saved.automationMode);
+    if (saved.currentFlowSession && saved.currentFlowSession.id) {
+      session = saved.currentFlowSession;
+      showFlowInline();
+    }
+    if (Array.isArray(saved.visualChanges)) {
+      changes.clear();
+      for (const c of saved.visualChanges) {
+        if (!c || !c.selector) continue;
+        let el = null;
+        try { el = document.querySelector(c.selector); } catch {}
+        changes.set(c.selector, {
+          kind: c.kind || "dom",
+          selector: c.selector,
+          before: c.before || "",
+          beforeText: c.beforeText || "",
+          after: c.after || "",
+          afterText: c.afterText || "",
+          addedHTML: c.addedHTML || "",
+          removed: !!c.removed,
+          el,
+          parent: el ? el.parentNode : null,
+          next: el ? el.nextSibling : null,
+        });
+      }
+      updateCount();
+    }
+  }
+
   function handleServer(msg) {
     if (msg.type === "hello") {
       ui.model.textContent = msg.model + (msg.vision ? " (vision)" : "");
+    } else if (msg.type === "pageState") {
+      restoreLocalState(msg.state);
     } else if (msg.type === "status") {
       addMsg("sys", msg.text);
     } else if (msg.type === "chatResult") {
@@ -472,7 +640,7 @@
     } else if (msg.type === "saveResult") {
       addMsg(msg.ok ? "ai" : "sys", msg.summary + (msg.failed && msg.failed.length ? `\nFailed: ${msg.failed.join(", ")}` : ""));
       if (!msg.ok && msg.modelOutput) addMsg("sys", "Model output (debug): " + msg.modelOutput);
-      if (msg.ok) { changes.clear(); updateCount(); }
+      if (msg.ok) { changes.clear(); updateCount(); saveLocalStateSoon(); }
     } else if (msg.type === "flowStarted") {
       addMsg("sys", "Recording userflow. Click and scroll as usual, then press the button again to stop.");
     } else if (msg.type === "flowStopped") {
@@ -480,11 +648,24 @@
       const evCount = msg.events.filter((e) => e.kind !== "shot").length;
       addMsg("sys", `Recording stopped. ${evCount} interaction${evCount !== 1 ? "s" : ""} captured.`);
       showFlowInline();
+      saveLocalStateSoon();
+    } else if (msg.type === "automationResult") {
+      if (msg.ok) {
+        addMsg("ai", `Automation script generated: ${msg.summary}\nSaved to: ${msg.file}`);
+        if (msg.notes) addMsg("sys", msg.notes);
+        automationInstructions = [];
+        updateInstCount();
+      } else {
+        addMsg("sys", "Automation failed: " + (msg.summary || "parse error"));
+        if (msg.modelOutput) addMsg("sys", "Model output (debug): " + msg.modelOutput);
+      }
     } else if (msg.type === "error") {
       addMsg("sys", "Error: " + msg.text);
     } else if (msg.type === "screenshotResult") {
-      pendingScreenshot = msg.data;
-      showScreenshotPreview();
+      const id = ++screenshotIdCounter;
+      pendingScreenshots.push({ id, data: msg.data });
+      addScreenshotPreview(id, msg.data);
+      saveLocalStateSoon();
     }
   }
 
@@ -528,6 +709,23 @@
     ui.puck.style.display = on ? "none" : ""; // hide puck during drag
   }
 
+  function setAutomationMode(on) {
+    automationMode = on;
+    ui.automationBtn.classList.toggle("automation", on);
+    ui.automationBtn.title = on ? "Automation mode on" : "Automation mode";
+    ui.panel.classList.toggle("automation", on);
+    ui.chatText.classList.toggle("automation", on);
+    ui.chatSend.classList.toggle("automation", on);
+    ui.chatText.placeholder = on ? "Describe what to automate... e.g. fill login form and click submit" : "Ask for a change... e.g. make the header dark blue";
+    if (on && editMode) setEditMode(false);
+    if (on) { updateInstCount(); }
+    saveLocalStateSoon();
+  }
+
+  function updateInstCount() {
+    ui.instCount.textContent = automationInstructions.length + " instruction" + (automationInstructions.length !== 1 ? "s" : "");
+  }
+
   function positionHl(box, el) {
     const r = el.getBoundingClientRect();
     Object.assign(box.style, { display: "block", left: r.left - 2 + "px", top: r.top - 2 + "px", width: r.width + 2 + "px", height: r.height + 2 + "px" });
@@ -548,7 +746,9 @@
     ui.inSize.value = parseInt(cs.fontSize, 10) || "";
     refreshInspector();
     el.setAttribute("contenteditable", "true");
+    el.setAttribute("spellcheck", "false");
     el.addEventListener("input", onLiveType);
+    setCaretAtEnd(el);
     addMsg("sys", "Context: " + cssPath(el));
     send({ type: "context", selected: el.outerHTML.slice(0, 2000), selector: cssPath(el) });
   }
@@ -556,16 +756,42 @@
   function deselect(hide = true) {
     if (selected) {
       selected.removeAttribute("contenteditable");
+      selected.removeAttribute("spellcheck");
       selected.removeEventListener("input", onLiveType);
     }
     selected = null;
     if (hide) { ui.selHl.style.display = "none"; ui.inspector.classList.remove("open"); }
   }
 
-  function onLiveType() { if (selected) ui.inText.value = directText(selected); }
+  function onLiveType() {
+    if (!selected) return;
+    ui.inText.value = directText(selected);
+    markTextChange(selected);
+    positionHl(ui.selHl, selected);
+  }
 
   function directText(el) {
     return [...el.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join("").trim() || el.textContent.trim().slice(0, 200);
+  }
+
+  function insertElement(where) {
+    if (!selected) return;
+    const tag = /^(p|div|span|button|h2|li)$/.test(ui.insertTag.value) ? ui.insertTag.value : "p";
+    const parent = where === "inside" ? selected : selected.parentElement;
+    if (!parent) return;
+    const rec = trackBefore(parent);
+    const el = document.createElement(tag);
+    el.textContent = "New text";
+    el.setAttribute("data-vibedit-added", "true");
+    if (where === "inside") selected.appendChild(el);
+    else selected.insertAdjacentElement("afterend", el);
+    rec.after = parent.outerHTML;
+    rec.added = true;
+    rec.addedHTML = el.outerHTML;
+    rec.afterText = directText(parent);
+    updateCount();
+    saveLocalStateSoon();
+    select(el);
   }
 
   function rgbToHex(rgb) {
@@ -600,6 +826,10 @@
       send({ type: "flowEvent", ev: { kind: "click", selector: cssPath(e.target), text: (e.target.textContent || "").trim().slice(0, 80), x: e.clientX, y: e.clientY } });
     }
     if (!editMode || isOurs(e.target)) return;
+    if (selected && (e.target === selected || selected.contains(e.target))) {
+      positionHl(ui.selHl, selected);
+      return;
+    }
     e.preventDefault(); e.stopPropagation();
     select(e.target);
   }, true);
@@ -732,6 +962,21 @@
       if (k.includes(prop) || prop.includes(k)) return v;
     }
     return [];
+  }
+
+  function numericCssValue(value) {
+    const m = String(value || "").trim().match(/^(-?\d+(?:\.\d+)?)([a-z%]*)$/i);
+    if (!m) return null;
+    return { n: Number(m[1]), unit: m[2] || "" };
+  }
+
+  function stepCssValue(value, direction, event) {
+    const parsed = numericCssValue(value);
+    if (!parsed || Number.isNaN(parsed.n)) return null;
+    const step = event.shiftKey ? 10 : event.altKey ? 0.1 : 1;
+    const next = parsed.n + direction * step;
+    const fixed = Math.abs(step) < 1 ? Number(next.toFixed(2)) : next;
+    return `${fixed}${parsed.unit}`;
   }
 
   // scope is "el" (inline styles on the selected element) or a class name
@@ -894,6 +1139,16 @@
       let idx = -1;
       input.addEventListener("keydown", (e) => {
         if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+          if (input === pv && numericCssValue(input.value)) {
+            e.preventDefault();
+            const next = stepCssValue(input.value, e.key === "ArrowUp" ? 1 : -1, e);
+            if (next != null) {
+              input.value = next;
+              syncColorPicker();
+              commit();
+            }
+            return;
+          }
           e.preventDefault();
           const sug = getSuggestions();
           if (!sug.length) { idx = -1; return; }
@@ -923,9 +1178,9 @@
 
     // --- wire events ---
     pn.addEventListener("change", commit);
-    pn.addEventListener("input", syncColorPicker);
+    pn.addEventListener("input", () => { syncColorPicker(); if (pv.value.trim()) commit(); });
     pv.addEventListener("change", commit);
-    pv.addEventListener("input", syncColorPicker);
+    pv.addEventListener("input", () => { syncColorPicker(); commit(); });
     row.querySelector("button").addEventListener("click", () => {
       if (pn.value.trim()) setProp(pn.value, "");
       row.remove();
@@ -992,11 +1247,16 @@
   // ---- inspector wiring ------------------------------------------------------
   ui.scopeSel.addEventListener("change", () => { scope = ui.scopeSel.value; refreshInspector(); });
   ui.addProp.addEventListener("click", () => addPropRow());
+  ui.addChild.addEventListener("click", () => insertElement("inside"));
+  ui.addAfter.addEventListener("click", () => insertElement("after"));
   ui.inText.addEventListener("input", () => {
     if (!selected) return;
+    trackBefore(selected);
     const tn = [...selected.childNodes].find((n) => n.nodeType === 3 && n.textContent.trim());
     if (tn) tn.textContent = ui.inText.value;
     else if (selected.children.length === 0) selected.textContent = ui.inText.value;
+    markTextChange(selected);
+    positionHl(ui.selHl, selected);
   });
   ui.inColor.addEventListener("input", () => { setProp("color", ui.inColor.value); renderProps(); });
   ui.inBg.addEventListener("input", () => { setProp("background-color", ui.inBg.value); renderProps(); });
@@ -1011,7 +1271,10 @@
   ui.deselBtn.addEventListener("click", () => deselect());
 
   // ---- toolbar ----------------------------------------------------------------
-  ui.puck.addEventListener("click", () => ui.panel.classList.toggle("open"));
+  ui.puck.addEventListener("click", () => {
+    ui.panel.classList.toggle("open");
+    saveLocalStateSoon();
+  });
   ui.editBtn.addEventListener("click", () => setEditMode(!editMode));
   ui.shotBtn.addEventListener("click", () => setScreenshotMode(!screenshotMode));
 
@@ -1053,9 +1316,18 @@
     deselect();
     const list = [...changes.values()].map((c) => c.kind === "css"
       ? { kind: "css", selector: c.selector, before: c.before, after: c.after || "" }
-      : { kind: "dom", selector: c.selector, before: c.before, after: c.removed ? "" : (c.el && c.el.isConnected ? c.el.outerHTML : "") }
+      : {
+          kind: "dom",
+          selector: c.selector,
+          before: c.before,
+          after: c.removed ? "" : (c.after || (c.el && c.el.isConnected ? c.el.outerHTML : "")),
+          beforeText: c.beforeText || "",
+          afterText: c.afterText || "",
+          addedHTML: c.addedHTML || "",
+          added: !!c.added,
+        }
     ).filter((c) => c.after !== c.before && !(c.kind === "css" && !c.after));
-    if (!list.length) { addMsg("sys", "All changes were reverted, nothing to save."); changes.clear(); updateCount(); return; }
+    if (!list.length) { addMsg("sys", "All changes were reverted, nothing to save."); changes.clear(); updateCount(); saveLocalStateSoon(); return; }
     addMsg("user", `Save ${list.length} change(s) to source`);
     send({ type: "save", changes: list, url: location.href, dom: prunedDOM(6000) });
     ui.savedrop.classList.remove("open");
@@ -1088,19 +1360,41 @@
     else send({ type: "flowStop" });
   });
 
+  ui.automationBtn.addEventListener("click", () => {
+    setAutomationMode(!automationMode);
+    if (!automationMode) {
+      // On disable: optionally send accumulated instructions
+      automationInstructions = [];
+      updateInstCount();
+    }
+  });
+
   // ---- chat ---------------------------------------------------------------------
   function sendChat() {
     const text = ui.chatText.value.trim();
     if (!text) return;
     ui.chatText.value = "";
-    addMsg("user", text);
     const payload = {
-      type: "chat", text,
+      text,
       url: location.href, title: document.title,
       dom: prunedDOM(), selected: selected ? selected.outerHTML : null
     };
-    if (session) { payload.flowEvents = session.events; payload.flowId = session.id; session = null; removeFlowMsg(); }
-    if (pendingScreenshot) { payload.screenshot = pendingScreenshot; discardScreenshot(); }
+
+    if (automationMode) {
+      // Automation mode: accumulate instructions locally, optionally send with flow
+      automationInstructions.push(text);
+      updateInstCount();
+      addMsg("instruction", text);
+      payload.type = "automation";
+      payload.instructions = automationInstructions;
+      saveLocalStateSoon();
+    } else {
+      addMsg("user", text);
+      payload.type = "chat";
+    }
+
+    if (session) { payload.flowEvents = session.events; payload.flowId = session.id; session = null; removeFlowMsg(); saveLocalStateSoon(); }
+    if (pendingScreenshots.length) { payload.screenshots = pendingScreenshots.map((s) => s.data); clearAllScreenshots(); }
     send(payload);
   }
   ui.chatSend.addEventListener("click", sendChat);
@@ -1170,6 +1464,7 @@
       session = null;
       removeFlowMsg();
       addMsg("sys", "Recording discarded.");
+      saveLocalStateSoon();
     });
   }
 
@@ -1179,6 +1474,7 @@
 
   // keep highlights aligned on resize
   window.addEventListener("resize", () => { if (selected) positionHl(ui.selHl, selected); });
+  window.addEventListener("beforeunload", saveLocalState);
 
   connect();
   addMsg("sys", "Connected page. Toggle Edit mode to click elements, or just ask in chat.");

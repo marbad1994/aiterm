@@ -13,8 +13,9 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const { startControlServer } = require('./control');
+const { ensureVibeditState } = require('./state');
 
-const VIBEDIT_CONTROL_PORT = 3947;
+const VIBEDIT_CONTROL_PORT = 0;
 
 // URL pattern matched against dev server stdout lines.
 const DEV_URL_RE = /(https?:\/\/localhost:\d{1,5}|https?:\/\/127\.0\.0\.1:\d{1,5}|https?:\/\/\[::1\]:\d{1,5})/;
@@ -183,8 +184,16 @@ async function waitReachable(url, timeoutMs) {
 
 // ── startVibedit ───────────────────────────────────────────────────────────
 
+// Resolve the built-in extension path. Returns the absolute path if the
+// manifest exists, otherwise null.
+function resolveExtensionPath() {
+  const extPath = path.resolve(__dirname, '..', '..', 'extensions', 'vibedit');
+  if (fs.existsSync(path.join(extPath, 'manifest.json'))) return extPath;
+  return null;
+}
+
 async function startVibedit(opts) {
-  let { projectDir, appUrl, onSpec } = opts;
+  let { projectDir, appUrl, onSpec, useExtension } = opts;
 
   // Resolve target.
   const target = resolveTarget(appUrl);
@@ -211,13 +220,9 @@ async function startVibedit(opts) {
     resolvedUrl = target.url;
   }
 
-  const stateDir = path.join(projectDir, '.vibedit');
-  fs.mkdirSync(path.join(stateDir, 'sessions'), { recursive: true });
-  fs.mkdirSync(path.join(stateDir, 'backups'), { recursive: true });
+  const state = ensureVibeditState(projectDir);
 
-  const port = opts.port || VIBEDIT_CONTROL_PORT;
-
-  console.log(`[shmakk vibedit] app: ${resolvedUrl}`);
+  const port = opts.port ?? VIBEDIT_CONTROL_PORT;
 
   // Launch visible browser.
   const browser = await chromium.launch({
@@ -227,19 +232,27 @@ async function startVibedit(opts) {
   const context = await browser.newContext({ viewport: null });
   const page = await context.newPage();
 
+  console.log(`[shmakk vibedit] app: ${resolvedUrl}`);
+
   // Start control server (WebSocket + HTTP) with page ref for screenshots.
   const control = await startControlServer({
     port,
-    stateDir,
+    stateDir: state.stateDir,
+    sessionsDir: state.sessionsDir,
+    specsDir: state.specsDir,
+    pendingSpecFile: state.pendingSpecFile,
+    automationsDir: state.automationsDir,
+    pageStateFile: state.pageStateFile,
     page,
     projectDir,
     onSpec,
   });
-  console.log(`[shmakk vibedit] control: ws://127.0.0.1:${port}`);
+  const controlPort = control.port;
+  console.log(`[shmakk vibedit] control: ws://127.0.0.1:${controlPort}`);
 
   // Inject overlay on every document load (survives HMR reloads).
   const overlayJs = fs.readFileSync(path.join(__dirname, 'overlay.js'), 'utf8');
-  const boot = `window.__VIBEDIT__ = { port: ${port} };\n${overlayJs}`;
+  const boot = `window.__VIBEDIT__ = { port: ${controlPort} };\n${overlayJs}`;
   await context.addInitScript({ content: boot });
 
   // Wait for app to be reachable, then navigate.
@@ -262,8 +275,11 @@ async function startVibedit(opts) {
     console.error(`[shmakk vibedit] could not open ${resolvedUrl}`);
   }
 
-  const shutdown = async () => {
-    console.log('\n[shmakk vibedit] shutting down');
+  let closed = false;
+  const shutdown = async (reason = 'requested') => {
+    if (closed) return;
+    closed = true;
+    console.log(`\n[shmakk vibedit] shutting down (${reason})`);
     try { await browser.close(); } catch {}
     control.close();
     if (devProc) {
@@ -273,7 +289,10 @@ async function startVibedit(opts) {
     }
   };
 
-  return { browser, control, shutdown };
+  page.on('close', () => { shutdown('browser window closed'); });
+  browser.on('disconnected', () => { shutdown('browser disconnected'); });
+
+  return { browser, control, port: controlPort, shutdown };
 }
 
 module.exports = { startVibedit, VIBEDIT_CONTROL_PORT };
