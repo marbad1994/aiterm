@@ -75,8 +75,12 @@ async function screenshot(args) {
       ok: true,
       path: filePath,
       mimeType: 'image/png',
-      data: b64,
-      dataLength: b64.length,
+      images: [{
+        mimeType: 'image/png',
+        data: b64,
+        dataLength: b64.length,
+        truncated: false,
+      }],
     };
   } catch (e) {
     return { error: `screenshot failed: ${e.message}` };

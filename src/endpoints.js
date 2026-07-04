@@ -12,6 +12,11 @@
 //       "model": "gpt-5-codex",
 //       "api_key": "sk-..."
 //     },
+//     "kimi": {
+//       "provider": "nvidia",
+//       "model": "moonshotai/kimi-k2.6",
+//       "api_key": "nvapi-..."
+//     },
 //     "claude": {
 //       "provider": "anthropic",
 //       "model": "claude-sonnet-4-5-20250929",
@@ -34,6 +39,13 @@ let currentEndpointConfig = null;
 let endpointsCwd = null;
 
 function configPath(cwd) {
+  // Check project-local endpoints first (cwd/endpoints.json), then global
+  const dir = cwd || process.cwd();
+  const localJson = path.join(dir, 'endpoints.json');
+  const localJs = path.join(dir, 'endpoints.js');
+  if (fs.existsSync(localJson)) return localJson;
+  if (fs.existsSync(localJs)) return localJs;
+
   const configDir = path.join(os.homedir(), '.config', 'shmakk');
   const jsonPath = path.join(configDir, 'endpoints.json');
   const jsPath = path.join(configDir, 'endpoints.js');
@@ -75,7 +87,7 @@ function normalizeModelConfig(name, cfg) {
     registry: cfg.registry || null,
     main: !!cfg.main,
     fast: !!cfg.fast,
-    vision: !!cfg.vision,
+    vision: _supportsVisionForConfig(cfg),
   };
 }
 
@@ -154,8 +166,38 @@ function getCurrentEndpointName() {
   return currentEndpointName;
 }
 
+function _supportsVisionForConfig(cfg) {
+  if (!cfg) return false;
+
+  // Explicit config wins
+  if ('vision' in cfg) return !!cfg.vision;
+
+  // Auto-detect for known vision-capable providers
+  const provider = (cfg.provider || '').toLowerCase();
+  const model = (cfg.model || '').toLowerCase();
+
+  // Providers whose APIs always support image_url content blocks
+  const visionProviders = new Set([
+    'anthropic',  // Claude 3+
+    'google',     // Gemini
+    'codex',      // Codex / OpenAI
+    'openai',
+    'nvidia',     // NIM
+  ]);
+
+  if (visionProviders.has(provider)) return true;
+
+  // openai-compatible: check model name for vision hints
+  if (provider === 'openai-compatible') {
+    const visionPatterns = /vision|vl|multimodal|gpt-4o|gemini|claude|llava|minicpm|cogvlm|qwenvl|phi-3\.5-vision/i;
+    return visionPatterns.test(model);
+  }
+
+  return false;
+}
+
 function supportsVision() {
-  return !!(currentEndpointConfig && currentEndpointConfig.vision);
+  return _supportsVisionForConfig(currentEndpointConfig);
 }
 
 function listEndpoints(cwd) {
@@ -164,11 +206,20 @@ function listEndpoints(cwd) {
 
 function getModelRegistry(cwd) {
   const registry = loadModelRegistry(cwd || endpointsCwd || process.cwd());
-  return {
-    main: registry.main,
-    fast: registry.fast,
-    models: Object.fromEntries(Object.entries(registry.models).map(([name, cfg]) => [name, { ...cfg }])),
-  };
+  const models = Object.fromEntries(Object.entries(registry.models).map(([name, cfg]) => [name, { ...cfg }]));
+  // Include top-level visionSupport in the models map so findVisionClient() picks it up
+  const vs = getVisionSupport(cwd);
+  if (vs) models.visionSupport = vs;
+  return { main: registry.main, fast: registry.fast, models };
+}
+
+// Returns the visionSupport endpoint config if defined in endpoints.json.
+// This is a dedicated endpoint used only for describing images when the
+// active model doesn't support vision natively.
+function getVisionSupport(cwd) {
+  const raw = loadEndpoints(cwd || endpointsCwd || process.cwd());
+  if (!raw || !raw.visionSupport || typeof raw.visionSupport !== 'object') return null;
+  return normalizeModelConfig('visionSupport', raw.visionSupport);
 }
 
 module.exports = {
@@ -178,5 +229,7 @@ module.exports = {
   getCurrentEndpointName,
   supportsVision,
   getModelRegistry,
+  getVisionSupport,
   _test: { normalizeRegistry, normalizeModelConfig },
+  _supportsVisionForConfig,
 };

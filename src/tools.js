@@ -678,6 +678,12 @@ async function dispatchTool(name, args, roots, confirmTool, signal, mcpManager) 
       prompt,
       size,
       revised_prompt: postData.data[0].revised_prompt || prompt,
+      images: [{
+        mimeType: 'image/png',
+        data: b64,
+        dataLength: b64.length,
+        truncated: false,
+      }],
     };
   }
   if (name === 'tts_generate') {

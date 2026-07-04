@@ -454,4 +454,5 @@ module.exports = {
   dbStats,
   closeDB,
   dbPath,
+  getDB,
 };

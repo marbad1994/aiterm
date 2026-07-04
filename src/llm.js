@@ -4,7 +4,7 @@ try { OpenAI = require('openai'); } catch { OpenAI = null; }
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
-const { getCurrentEndpoint, getCurrentEndpointName, getModelRegistry, supportsVision } = require('./endpoints');
+const { getCurrentEndpoint, getCurrentEndpointName, getModelRegistry, supportsVision, getVisionSupport } = require('./endpoints');
 
 function parseHeaders(s) {
   const out = {};
@@ -130,12 +130,19 @@ function isConfigured() {
   if (recommendationMode()) return Object.keys(getModelRegistry().models).length > 0;
   if (cfg.provider === 'anthropic') return true;  // claude-proxy handles auth via OAuth
   if (cfg.provider === 'codex') return true;  // codex-proxy handles auth via OAuth
+  if (cfg.provider === 'nvidia') return !!cfg.apiKey && !!OpenAI;
   return (!!cfg.baseURL || cfg.provider === 'openai') && !!OpenAI;
+}
+
+function getDefaultBaseURL(provider) {
+  if (provider === 'openai') return 'https://local:8095/v1';
+  if (provider === 'nvidia') return 'https://integrate.api.nvidia.com/v1';
+  return undefined;
 }
 
 function makeOpenAIClient(cfg) {
   if (!OpenAI) throw new Error('openai sdk not installed');
-  const baseURL = cfg.baseURL || (cfg.provider === 'openai' ? 'https://local:8095/v1' : undefined);
+  const baseURL = cfg.baseURL || getDefaultBaseURL(cfg.provider);
   if (!baseURL) throw new Error('SHMAKK_BASE_URL is required for OpenAI-compatible providers');
   const client = new OpenAI({
     baseURL,
@@ -201,6 +208,7 @@ function isImageUrlSchemaError(err) {
 function makeProviderClient(cfg) {
   if (cfg.provider === 'anthropic') return makeAnthropicCompatClient(cfg);
   if (cfg.provider === 'codex') return makeCodexCompatClient(cfg);
+  if (cfg.provider === 'nvidia') return makeOpenAIClient(cfg);
   return makeOpenAIClient(cfg);
 }
 
@@ -887,6 +895,76 @@ function getDeepSeekOptions(taskType) {
   };
 }
 
+// ── Vision fallback: describe images via a vision-capable endpoint ────────
+// When the current endpoint doesn't support vision but a tool returned images,
+// we call the dedicated visionSupport endpoint (from endpoints.json) to
+// describe them as text for the non-vision model.
+
+async function describeImages(images, signal) {
+  // Filter to images with actual base64 data
+  const valid = (images || []).filter((img) => img && img.data);
+  if (!valid.length) return null;
+
+  let visionCfg = getVisionSupport();
+
+  // No explicit visionSupport config: try to find a vision-capable endpoint
+  // from the model registry automatically.
+  if (!visionCfg) {
+    const registry = getModelRegistry();
+    if (registry && registry.models) {
+      for (const [name, entry] of Object.entries(registry.models)) {
+        if (entry.vision) {
+          visionCfg = { name, ...entry, vision: true };
+          break;
+        }
+      }
+    }
+  }
+
+  if (!visionCfg) return null;
+
+  const cfg = configFromModelEntry('visionSupport', visionCfg);
+  let client;
+  try {
+    client = makeProviderClient(cfg);
+  } catch {
+    return null;
+  }
+  if (!client) return null;
+
+  const desc = valid.map((img, i) =>
+    `[Image #${i + 1}: ${img.mimeType}, ${(img.dataLength * 0.75) | 0} decoded bytes${img.truncated ? ', truncated' : ''}]`
+  ).join(', ');
+
+  try {
+    const resp = await client.chat.completions.create({
+      model: cfg.model,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Describe these images concisely. Focus on what is visible: UI elements, text, layout, key content. If there are multiple images, describe each one labeled by number. Keep it under 500 words.' },
+          ...valid.map((img) => ({
+            type: 'image_url',
+            image_url: { url: `data:${img.mimeType};base64,${img.data}`, detail: 'auto' },
+          })),
+        ],
+      }],
+      max_tokens: 600,
+    }, { signal });
+
+    const text = resp?.choices?.[0]?.message?.content?.trim();
+    if (text) {
+      process.stderr.write(`[shmakk] vision fallback described ${valid.length} image(s): ${desc}\n`);
+      return `[Vision description via ${cfg.model || 'visionSupport'}]:\n${text}`;
+    }
+    return null;
+  } catch (e) {
+    if (e?.name === 'AbortError') throw e;
+    process.stderr.write(`[shmakk] vision fallback (${cfg.model || 'visionSupport'}) failed: ${e.message}\n`);
+    return null;
+  }
+}
+
 module.exports = {
   makeClient,
   makeClientForEndpoint,
@@ -896,5 +974,6 @@ module.exports = {
   getDeepSeekOptions,
   isDeepSeekProvider,
   supportsVision,
+  describeImages,
   _test: { downgradeVisionMessages, hasVisionContent, isImageUrlSchemaError },
 };

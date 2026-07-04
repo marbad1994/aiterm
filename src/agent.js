@@ -7,7 +7,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { makeClient, modelFor, isConfigured, getDeepSeekOptions, supportsVision } = require('./llm');
+const { makeClient, modelFor, isConfigured, getDeepSeekOptions, supportsVision, describeImages } = require('./llm');
 const {
   sanitizeAssistantContent,
   isLeakedToolMarkup,
@@ -561,9 +561,16 @@ async function runAgent({ input, roots, glossary, confirmTool, write, signal, hi
       );
       let toolContent = (toolText + (Object.keys(toolMeta).length ? ' ' + JSON.stringify(toolMeta) : '')).trim();
       if (toolImages.length > 0 && !supportsVision()) {
-        // Endpoint doesn't support vision — include image metadata as text
-        const imgDesc = toolImages.map((img, i) => `[Image #${i + 1}: ${img.mimeType}, base64=${img.dataLength} chars${img.truncated ? ', truncated' : ''}]`).join(', ');
-        toolContent = toolContent ? `${toolContent} ${imgDesc}` : imgDesc;
+        // Endpoint doesn't support vision — call a vision-capable endpoint
+        // to describe the images as text for the non-vision model.
+        const visionDesc = await describeImages(toolImages, signal);
+        if (visionDesc) {
+          toolContent = toolContent ? `${toolContent}\n${visionDesc}` : visionDesc;
+        } else {
+          // Fallback: include image metadata as text
+          const imgDesc = toolImages.map((img, i) => `[Image #${i + 1}: ${img.mimeType}, base64=${img.dataLength} chars${img.truncated ? ', truncated' : ''}]`).join(', ');
+          toolContent = toolContent ? `${toolContent} ${imgDesc}` : imgDesc;
+        }
       }
       messages.push({ role: 'tool', tool_call_id: c.id, content: toolContent.slice(0, 8000) });
       if (toolImages.length > 0 && supportsVision()) {
