@@ -27,7 +27,7 @@ console.log('Ctrl-C to stop.\n');
 
 startVibedit({
   projectDir,
-  appUrl,
+  appUrl: target,
   onSpec: (spec, specPath) => {
     console.log(`\n[test] Spec saved! ${spec.summary || '(no summary)'}`);
     console.log(`[test] Spec file: ${specPath}`);

@@ -112,6 +112,13 @@ const test = (name, fn) => tests.push({ name, fn });
     assert.deepStrictEqual(opts.unknown, ['--help', 'file.txt']);
   });
 
+  test('cli: parses browser-daemon subcommand', () => {
+    const opts = parseArgs(['browser-daemon', '--port', '3948']);
+    assert.strictEqual(opts.browserDaemon, true);
+    assert.strictEqual(opts.browserDaemonPort, 3948);
+    assert.deepStrictEqual(opts.unknown, []);
+  });
+
   test('completions: includes --vim argument choices', () => {
     const flag = FLAGS.find((f) => f.flag === '--vim');
     assert.ok(flag);
@@ -550,6 +557,100 @@ const test = (name, fn) => tests.push({ name, fn });
 
   test('cli: documents yes-files flag', () => {
     assert.match(HELP, /--yes-files/);
+  });
+}
+
+// ── Vibedit state ─────────────────────────────────────────────────────────
+{
+  const path = require('path');
+  const { vibeditState } = require('../src/vibedit/state');
+
+  test('vibedit: state paths live under .shmakk/state', () => {
+    const root = '/tmp/shmakk-project';
+    const state = vibeditState(root);
+    assert.strictEqual(state.stateDir, path.join(root, '.shmakk', 'state'));
+    assert.strictEqual(state.pendingSpecFile, path.join(root, '.shmakk', 'state', 'vibedit-specs', 'pending'));
+    assert.strictEqual(state.pageStateFile, path.join(root, '.shmakk', 'state', 'vibedit-page-state.json'));
+    assert.ok(!Object.values(state).some((p) => String(p).includes('.' + 'vibedit')));
+  });
+
+  test('vibedit: launchers default to dynamic control ports', () => {
+    const web = fs.readFileSync(path.join(__dirname, '..', 'src', 'vibedit', 'index.js'), 'utf8');
+    const electron = fs.readFileSync(path.join(__dirname, '..', 'src', 'vibedit', 'electron.js'), 'utf8');
+    const overlay = fs.readFileSync(path.join(__dirname, '..', 'src', 'vibedit', 'overlay.js'), 'utf8');
+    assert.match(web, /const VIBEDIT_CONTROL_PORT = 0/);
+    assert.match(electron, /const VIBEDIT_CONTROL_PORT = 0/);
+    assert.ok(!web.includes('3947'));
+    assert.ok(!electron.includes('3947'));
+    assert.ok(!overlay.includes('8417'));
+  });
+}
+
+// ── Browser Automator extension ───────────────────────────────────────────
+{
+  const path = require('path');
+  const vm = require('vm');
+  const extDir = path.join(__dirname, '..', 'extensions', 'vibedit');
+  const content = fs.readFileSync(path.join(extDir, 'content.js'), 'utf8');
+  const background = fs.readFileSync(path.join(extDir, 'background.js'), 'utf8');
+  const popupHtml = fs.readFileSync(path.join(extDir, 'popup.html'), 'utf8');
+  const popupJs = fs.readFileSync(path.join(extDir, 'popup.js'), 'utf8');
+  const manifest = JSON.parse(fs.readFileSync(path.join(extDir, 'manifest.json'), 'utf8'));
+
+  test('browser automator extension: manifest and popup use automation branding', () => {
+    assert.strictEqual(manifest.name, 'shmakk Browser Automator');
+    assert.strictEqual(manifest.action.default_title, 'shmakk Browser Automator');
+    assert.match(manifest.description, /Automation overlay/i);
+    assert.match(popupHtml, /shmakk Browser Automator/);
+    assert.match(popupHtml, /shmakk browser-daemon/);
+    assert.match(popupJs, /browser-daemon/);
+  });
+
+  test('browser automator extension: content script excludes editor features', () => {
+    for (const forbidden of [
+      'saveBtn',
+      'editBtn',
+      'applyOps',
+      'saveResult',
+      'chatResult',
+      'inspector',
+      'source-spec',
+      'flowApply',
+      'executeScript',
+    ]) {
+      assert.ok(!content.includes(forbidden), `content.js should not contain ${forbidden}`);
+    }
+    assert.ok(content.includes('type: "automation"'));
+    assert.ok(content.includes('Describe what to automate...'));
+    assert.ok(content.includes('browserAutomator:'));
+    assert.ok(content.includes('chrome.storage.local.set'));
+    assert.ok(content.includes('chrome.storage.local.get'));
+  });
+
+  test('browser automator extension: background only forwards automation requests', () => {
+    assert.ok(background.includes("msg.type === 'automation'"));
+    assert.ok(background.includes("msg.type === 'executeTabAction'"));
+    assert.ok(background.includes('browserAutomator:${tabId}:'));
+    for (const forbidden of [
+      "msg.type === 'chat'",
+      "msg.type === 'save'",
+      "msg.type === 'flowStart'",
+      "msg.type === 'flowStop'",
+      "msg.type === 'flowApply'",
+      "msg.type === 'context'",
+      "msg.type === 'screenshot'",
+      "msg.type === 'executeScript'",
+      "msg.type === 'chatResult'",
+      "msg.type === 'saveResult'",
+    ]) {
+      assert.ok(!background.includes(forbidden), `background.js should not contain ${forbidden}`);
+    }
+  });
+
+  test('browser automator extension: scripts parse as JavaScript', () => {
+    new vm.Script(content, { filename: 'content.js' });
+    new vm.Script(background, { filename: 'background.js' });
+    new vm.Script(popupJs, { filename: 'popup.js' });
   });
 }
 
@@ -1467,6 +1568,8 @@ test('modules: all entry modules load', () => {
   require('../src/agent');
   require('../src/review');
   require('../src/orchestrator');
+  require('../src/browser-daemon');
+  require('../src/cli/browserDaemon');
 });
 
 // ── runner ─────────────────────────────────────────────────────────────────

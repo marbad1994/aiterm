@@ -259,7 +259,9 @@ Two matching strategies:
 1. **Exact match** (`exactReplace`): simple `String.indexOf()` check. Fast path.
 2. **Fuzzy match** (`fuzzyReplace`): line-trimmed match that tolerates indentation drift. Splits both search and content into lines, trims whitespace, tries to find a contiguous match of the trimmed lines.
 
-Files are backed up to `.vibedit/backups/{timestamp}/` before modification.
+Vibedit project-local artifacts are stored under `.shmakk/state/`; generated
+specs use `.shmakk/state/vibedit-specs/` and recorded flow media uses
+`.shmakk/state/vibedit-sessions/`.
 
 ### File Shortlisting
 
