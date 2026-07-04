@@ -197,6 +197,7 @@ async function runOneSession(opts, registerSession) {
   const session = startSession({
     debug: opts.debug,
     voiceEnabled: !!opts.voice && !opts.sts,
+    stsEnabled: !!opts.sts,
     shellOverride: opts.shell,
     extraEnv: vimShim.env,
     cleanup: vimShim.cleanup,
@@ -653,6 +654,8 @@ async function runOneSession(opts, registerSession) {
       session._stsFlags.setTtsSpeaking = (v) => { ttsSpeaking = v; if (!v) ttsStoppedAt = Date.now(); };
       // Let the global Ctrl+C handler stop the STS loop on double-press.
       session._stsFlags.stopLoop = () => { voiceLoopActive = false; stsLoopStarted = false; };
+      // Pause/resume the loop externally (used by push-to-talk interrupt).
+      session._stsFlags.setVoiceBusy = (v) => { voiceBusy = v; };
       return true;
     }
   }
@@ -677,29 +680,21 @@ async function runOneSession(opts, registerSession) {
     if (mode === 'stt') {
       if (on) {
         stopStsLoop();
-        stopTts();
         opts.stt = true;
-        opts.tts = false;
-        opts.sts = false;
         opts.voice = true;
+        opts.sts = false;
         session.setVoiceEnabled(true);
       } else {
         opts.stt = false;
-        opts.voice = false;
-        session.setVoiceEnabled(false);
+        if (!opts.sts) opts.voice = false;
+        if (!opts.sts) session.setVoiceEnabled(false);
         stopRecorder();
       }
       return;
     }
     if (mode === 'tts') {
       if (on) {
-        stopStsLoop();
-        stopRecorder();
-        opts.stt = false;
         opts.tts = true;
-        opts.sts = false;
-        opts.voice = false;
-        session.setVoiceEnabled(false);
       } else {
         opts.tts = false;
         stopTts();
@@ -710,16 +705,17 @@ async function runOneSession(opts, registerSession) {
       if (on) {
         stopRecorder();
         stopTts();
-        opts.stt = false;
-        opts.tts = false;
         opts.sts = true;
         opts.voice = true;
-        session.setVoiceEnabled(false);
+        opts.tts = true;
+        opts.stt = false;
+        session.setVoiceEnabled(true);
         startStsLoop();
       } else {
         opts.sts = false;
-        opts.voice = false;
-        session.setVoiceEnabled(false);
+        opts.voice = !!opts.stt;
+        opts.tts = false;
+        session.setVoiceEnabled(!!opts.stt);
         stopStsLoop();
         stopRecorder();
         stopTts();
@@ -732,7 +728,39 @@ async function runOneSession(opts, registerSession) {
   let voiceInProgress = false;
   const voiceWarned = { mic: false };
   session.ev.on('voice', async () => {
-    if (!opts.voice || opts.sts || voiceInProgress) return;
+    if (!opts.voice || voiceInProgress) return;
+
+    // ── STS push-to-talk interrupt ──
+    // User hits Ctrl+O while shmakk is talking (or idle) in STS mode.
+    // Kill TTS + ongoing recording, record PTT clip, run it, then resume.
+    if (opts.sts) {
+      voiceInProgress = true;
+      try {
+        const vs = getVoiceService();
+        const wasBusy = session._stsFlags?.setVoiceBusy ? true : false;
+        try { fullVoiceTeardown(); } catch {}
+        if (session._stsFlags?.setVoiceBusy) session._stsFlags.setVoiceBusy(true);
+        out('\r\n\x1b[36m[shmakk voice] push-to-talk (speak now, stops on silence)\x1b[0m');
+        const text = await vs.recordAndTranscribe({
+          maxDurationSec: parseInt(opts.voiceMaxDuration || process.env.SHMAKK_VOICE_MAX_SEC || '10', 10),
+          language: opts.voiceLanguage || process.env.SHMAKK_VOICE_LANGUAGE,
+        });
+        if (text) {
+          await runVoiceAsTask(text);
+        } else {
+          out('\r\x1b[33m[shmakk] no speech detected\x1b[0m\r\n');
+        }
+      } catch (err) {
+        out(`\r\x1b[31m[shmakk voice] ${err.message}\x1b[0m\r\n`);
+        if (opts.debug) out(`\r\x1b[33m${err.stack}\x1b[0m\r\n`);
+      } finally {
+        if (session._stsFlags?.setVoiceBusy) session._stsFlags.setVoiceBusy(false);
+        voiceInProgress = false;
+      }
+      return;
+    }
+
+    // ── STT push-to-talk (hotkey-driven voice input) ──
     voiceInProgress = true;
     try {
       const vs = getVoiceService();
@@ -745,7 +773,7 @@ async function runOneSession(opts, registerSession) {
         voiceWarned.mic = true;
       }
       // Show recording indicator — stays visible until transcription starts
-      out('\r\n\x1b[36m🎤 [shmakk] Listening... (speak now, stops on silence)\x1b[0m');
+      out('\r\n\x1b[36m[shmakk voice] Listening... (speak now, stops on silence)\x1b[0m');
       session.setVoiceEnabled(false);
       // Use a handler on the stdin stack so Ctrl-C aborts recording
       let recordingDone = false;

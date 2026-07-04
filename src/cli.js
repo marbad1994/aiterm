@@ -23,6 +23,7 @@ function parseArgs(argv) {
     showPlan: false,
     newSession: false,
     mcpStatus: false,
+    consolidateWorkspace: false,
     exitNow: false,
     restart: false,
     profile: null,
@@ -50,6 +51,8 @@ function parseArgs(argv) {
     completion: null,
     helpCategory: null,
     shell: null,
+    browserDaemon: false,
+    browserDaemonPort: null,
     // connect-browser subcommand
     connectBrowser: false,
     connectBrowserPort: null,
@@ -58,10 +61,16 @@ function parseArgs(argv) {
     unknown: [],
   };
   const setVoiceCliMode = (mode) => {
-    opts.stt = mode === 'stt';
-    opts.tts = mode === 'tts';
-    opts.sts = mode === 'sts';
-    opts.voice = mode === 'stt' || mode === 'sts';
+    if (mode === 'stt') {
+      opts.stt = true;
+      opts.voice = true;
+    } else if (mode === 'tts') {
+      opts.tts = true;
+    } else if (mode === 'sts') {
+      opts.sts = true;
+      opts.voice = true;
+      opts.tts = true;
+    }
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -101,6 +110,7 @@ function parseArgs(argv) {
       case '--show-plan': opts.showPlan = true; break;
       case '--new-session': opts.newSession = true; break;
       case '--mcp-status': opts.mcpStatus = true; break;
+      case '--consolidate-workspace': opts.consolidateWorkspace = true; break;
       case '--exit': opts.exitNow = true; break;
       case '--restart': opts.restart = true; break;
       case '--reset': opts.reset = true; break;
@@ -181,6 +191,26 @@ function parseArgs(argv) {
           }
         }
         break;
+      case 'browser-daemon':
+        opts.browserDaemon = true;
+        while (i + 1 < argv.length) {
+          const n = argv[i + 1];
+          if (n === '--port' || n === '-p') {
+            i++;
+            opts.browserDaemonPort = parseInt(argv[++i], 10);
+            if (isNaN(opts.browserDaemonPort)) {
+              process.stderr.write(`[shmakk] browser-daemon: invalid port: ${argv[i]}\n`);
+              process.exit(2);
+            }
+          } else if (n === '--help' || n === '-h') {
+            i++;
+            opts.help = true;
+            opts.helpCategory = 'mcp';
+          } else {
+            break;
+          }
+        }
+        break;
       default: opts.unknown.push(a);
     }
   }
@@ -255,7 +285,7 @@ HELP_SECTIONS.models = `══════════════════�
   --endpoint <name>                Use model preset from ~/.config/shmakk/endpoints.json
   --model-recommendation           Main model chooses best model per call
 
-  Providers: openai-compatible | codex | anthropic | google
+  Providers: openai-compatible | codex | anthropic | google | nvidia
   Configure in ~/.config/shmakk/endpoints.json:
     {
       "main": "claude",
@@ -264,6 +294,7 @@ HELP_SECTIONS.models = `══════════════════�
         "claude":       { "provider":"anthropic", "model":"claude-sonnet-4-5-...", "api_key":"..." },
         "flash":        { "provider":"google",    "model":"gemini-flash",       "api_key":"..." },
         "gpt5":         { "provider":"codex",     "model":"gpt-5-codex",        "api_key":"..." },
+        "kimi":         { "provider":"nvidia",    "model":"moonshotai/kimi-k2.6", "api_key":"nvapi-..." },
         "local-qwen":   { "provider":"openai-compatible", "base_url":"http://127.0.0.1:1234/v1",
                           "model":"qwen/qwen3.5-9b" }
       }
@@ -323,6 +354,7 @@ HELP_SECTIONS.session = `══════════════════�
   shmakk --mcp-status              MCP servers and their tools
 
   shmakk --compact                 Clear conversation + task journal
+  shmakk --consolidate-workspace   Merge nested .shmakk dirs into root
   shmakk --reset                   Clear AI conversation history (keep session)
   shmakk --restart                 Restart the inner shell (keeps window)
   shmakk --exit                    Cleanly exit the parent shmakk
@@ -373,7 +405,7 @@ HELP_SECTIONS.env = `═══════════════════�
   SHMAKK_MODEL                     Default model
   SHMAKK_FAST_ENDPOINT             Named endpoint for low-latency tasks
   SHMAKK_VIM_SUGGEST_ENDPOINT      Named endpoint for Vim suggestions
-  SHMAKK_PROVIDER                  Provider: openai-compatible|codex|anthropic|google
+  SHMAKK_PROVIDER                  Provider: openai-compatible|codex|anthropic|google|nvidia
   SHMAKK_HEADERS                   Extra headers: k=v,k=v
   SHMAKK_REGISTRY                  Model registry filter (comma-separated)
   SHMAKK_MODEL_RECOMMENDATION      Set to 1 to let main model choose per call
@@ -413,17 +445,20 @@ HELP_SECTIONS.mcp = `═══════════════════�
       }
     }
 
-  Browser automation: requires playwright
+  Agent browser tool: headless Playwright for non-interactive browsing.
     npm install playwright && npx playwright install chromium
   Tools: navigate, click, type, read_page, screenshot, evaluate, select,
   wait, scroll, close.
 
-  Connect to your own Chrome (preserves logins and sessions):
-    google-chrome-stable --remote-debugging-port=9222
-    shmakk connect-browser                  auto-detect and connect
-    shmakk connect-browser --port 9222      connect to specific port
-    shmakk connect-browser --status         show connection status
-    shmakk connect-browser --disconnect     disconnect
+  Extension automation for the current Chrome tab:
+    shmakk browser-daemon                  run global extension backend
+    shmakk browser-daemon --port 3947      use a custom extension port
+
+  CDP connection is for live debugging / Electron-style targets:
+    shmakk connect-browser                 auto-detect and connect
+    shmakk connect-browser --port 9222     connect to specific port
+    shmakk connect-browser --status        show connection status
+    shmakk connect-browser --disconnect    disconnect
 
   shmakk --mcp-status              Show configured servers and discovered tools
 `;
@@ -456,7 +491,7 @@ HELP_SECTIONS.ssh = `═══════════════════�
       ControlPersist 600
 `;
 
-HELP_SECTIONS.vibedit = `═══════════════════════════════════════════════════════════════════════════
+HELP_SECTIONS['vibedit'] = `═══════════════════════════════════════════════════════════════════════════
   VIBEDIT  (web + Electron)
 ═══════════════════════════════════════════════════════════════════════════
 
@@ -495,7 +530,9 @@ HELP_SECTIONS.vibedit = `══════════════════�
   Both modes require:  npm install playwright && npx playwright install chromium
   Electron mode also needs the target app's debug port accessible.
 
-  Control port (internal): 3947
+  Project-local state: .shmakk/state/vibedit-*
+  Extension daemon state: ~/.config/shmakk/browser-daemon.json
+  Vibedit control port: auto-assigned per overlay session
 `;
 
 HELP_SECTIONS.self = `═══════════════════════════════════════════════════════════════════════════
@@ -561,6 +598,7 @@ HELP_SECTIONS.self = `═══════════════════�
   /vibedit <url | path>            Launch visual editing overlay on a web app
   /vibedit-electron <port>         Connect overlay to an Electron app via CDP
   /ve <port>                       Short alias for /vibedit-electron
+  shmakk browser-daemon            Run Chrome extension automation backend
 
   -- Workflows --
   list workflows                    Show available automation workflows

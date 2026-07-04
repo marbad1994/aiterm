@@ -13,7 +13,7 @@ function getSize() {
 
 const VOICE_HOTKEY = 0x0f; // Ctrl+O — triggers voice recording
 
-function startSession({ debug = false, voiceEnabled = false, shellOverride = null, extraEnv = {}, cleanup = null } = {}) {
+function startSession({ debug = false, voiceEnabled = false, stsEnabled = false, shellOverride = null, extraEnv = {}, cleanup = null } = {}) {
   const shell = detectShell(shellOverride);
   const cfg = configureForShell(shell.name);
   const { cols, rows } = getSize();
@@ -32,7 +32,7 @@ function startSession({ debug = false, voiceEnabled = false, shellOverride = nul
   });
 
   const ev = new EventEmitter();
-  let voiceHotkeyEnabled = !!voiceEnabled;
+  let voiceHotkeyEnabled = !!(voiceEnabled || stsEnabled);
   // Stack of stdin handlers: top of stack receives data. Null at bottom
   // means "relay to child PTY".
   const stdinStack = [];
